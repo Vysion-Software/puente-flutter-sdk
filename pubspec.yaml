@@ -1,0 +1,32 @@
+name: puente_railway
+version: 0.1.0
+description: Official Flutter/Dart SDK for the Puente Railway cross-border payments API.
+homepage: https://github.com/puente-railway/puente_railway_flutter
+repository: https://github.com/puente-railway/puente_railway_flutter
+issue_tracker: https://github.com/puente-railway/puente_railway_flutter/issues
+topics:
+  - payments
+  - fintech
+  - remittance
+  - cross-border
+  - solana
+platforms:
+  dart:
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  http: ^1.2.0
+  json_annotation: ^4.9.0
+  crypto: ^3.0.3
+  equatable: ^2.0.5
+  meta: ^1.15.0
+
+dev_dependencies:
+  build_runner: ^2.4.0
+  json_serializable: ^6.8.0
+  flutter_test:
+    sdk: flutter
+  mockito: ^5.4.4
+  flutter_lints: ^3.0.0

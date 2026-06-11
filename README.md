@@ -1,10 +1,41 @@
 # Puente Railway Flutter SDK
 
-[![pub package](https://img.shields.io/pub/v/puente_railway.svg)](https://pub.dev/packages/puente_railway)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Dart CI](https://github.com/puente-railway/puente_railway_flutter/workflows/Dart%20CI/badge.svg)](https://github.com/puente-railway/puente_railway_flutter/actions)
 
-Official Flutter/Dart SDK for the Puente Railway cross-border payments API. Puente Railway is the infrastructure layer for cross-border USD→MXN transfers, powering the US-to-Mexico remittance corridor over USDC-CETES-on-Solana rails with SPEI/CLABE settlement in Mexico.
+Dart / Flutter SDK that **will** target the Puente Railway cross-border
+payments API once that API is implemented. This package is the intended
+client; the server it talks to is the
+[`Vysion-Software/Puente`](https://github.com/Vysion-Software/Puente)
+Rust workspace.
+
+> **Status: pre-contract.** As of 2026-06-11 the routes this SDK
+> calls (`/quotes`, `/transfers`, `/accounts`, `/clabe`) **do not exist
+> in the live Puente backend**. The Puente server currently exposes only
+> `/health`, `/balances`, and `/webhooks/etherfuse`. The webhook signature
+> format this SDK verifies (`t=…,v1=…`) does **not** match what Puente's
+> outbound webhook handler will emit (format TBD). See
+> [`docs/contract-status.md`](docs/contract-status.md) for the full
+> mismatch table.
+>
+> Treat the API in this README as a forward-looking design. Do not ship
+> code against this SDK to production until the contract gap is closed.
+
+## When this SDK will work
+
+The cross-repo blockers — tracked in
+[`Vysion-Software/Puente`](https://github.com/Vysion-Software/Puente/issues):
+
+1. **Puente issue #14** — Puente emits an OpenAPI 3.1 spec.
+2. Puente lands the v1 routes (issues #9, #10, #11).
+3. Puente lands API authentication and idempotency-key middleware
+   (issue #8).
+4. Puente picks a signature format + event vocabulary for outbound
+   merchant webhooks (issue #13).
+5. This SDK is updated to match — either regenerated from the spec or
+   manually realigned, with a constant-time HMAC compare added.
+
+Until step 1, the public API in this package is **not a contract** —
+it's a proposal.
 
 ## Installation
 
@@ -12,27 +43,24 @@ Official Flutter/Dart SDK for the Puente Railway cross-border payments API. Puen
 flutter pub add puente_railway
 ```
 
-## Quick Start
+## Intended API (what the package implements today)
 
 ```dart
 import 'package:puente_railway/puente_railway.dart';
 
 void main() async {
-  // 1. Initialize the client
   final client = PuenteClient(
     apiKey: 'sk_sandbox_demo',
     environment: PuenteEnvironment.sandbox,
   );
 
   try {
-    // 2. Get a live exchange rate quote
     final quote = await client.quotes.create(
       sourceAmount: Money(cents: 10000, currency: 'USD'),
       sourceCurrency: 'USD',
       targetCurrency: 'MXN',
     );
 
-    // 3. Initiate a transfer
     final transfer = await client.transfers.create(
       quoteId: quote.id,
       senderAccountId: 'acct_123',
@@ -40,7 +68,6 @@ void main() async {
       receiverName: 'María García López',
     );
 
-    // 4. Check status
     print('Transfer ${transfer.id} status: ${transfer.status.name}');
   } on PuenteException catch (e) {
     print('Error: ${e.message}');
@@ -48,9 +75,10 @@ void main() async {
 }
 ```
 
-## Environments
+Against the current Puente backend this code will produce 404s on every
+resource call.
 
-The SDK supports both `sandbox` and `production` environments.
+## Environments
 
 ```dart
 final sandboxClient = PuenteClient(
@@ -64,66 +92,82 @@ final prodClient = PuenteClient(
 );
 ```
 
-## Error Handling
+Base URLs (`lib/src/client/puente_config.dart`):
+- Sandbox → `https://sandbox.api.puenterailway.com/v1`
+- Production → `https://api.puenterailway.com/v1`
 
-All resource methods throw typed exceptions for predictable error handling:
+Neither hostname resolves to a deployed Puente service today.
 
-```dart
-try {
-  final transfer = await client.transfers.create(...);
-} on AuthException catch (e) {
-  print('Invalid API key: ${e.message}');
-} on RateLimitException catch (e) {
-  print('Rate limited! Retry after: ${e.retryAfter}');
-} on ValidationException catch (e) {
-  print('Validation failed: ${e.fieldErrors}');
-} on ApiException catch (e) {
-  print('HTTP error [${e.statusCode}]: ${e.message}');
-} on PuenteException catch (e) {
-  print('Network or SDK error: ${e.message}');
-}
-```
+## Exception hierarchy
 
-## Webhook Verification
+| Exception | Triggered on |
+|---|---|
+| `AuthException` | HTTP 401 / 403 |
+| `ValidationException` (with `fieldErrors`) | HTTP 422 |
+| `RateLimitException` (with `retryAfter`) | HTTP 429, honors `Retry-After` |
+| `ApiException` | Any other non-2xx (carries `statusCode`, `requestId`) |
+| `PuenteException` | Transport / SDK-level failures (timeout, JSON decode) |
 
-Verify signed payloads from Puente webhooks using `WebhookVerifier`:
+`RetryInterceptor` retries 429 + 5xx with exponential backoff (default 3
+attempts, base 500ms, ±100ms jitter). Errors thrown after the retry
+budget are surfaced to the caller verbatim.
+
+## Webhook verification
 
 ```dart
 final verifier = WebhookVerifier(secret: 'whsec_...');
 
 try {
   final event = verifier.constructEvent(
-    payload: rawBody,       // Raw HTTP request body string
-    signature: sigHeader,   // Puente-Signature header value
+    payload: rawBody,       // RAW HTTP request body string
+    signature: sigHeader,   // header value
   );
-  
   if (event.type == WebhookEventType.transferSettled) {
-    print('Transfer settled!');
+    // ...
   }
 } on PuenteException catch (e) {
   print('Webhook verification failed: $e');
 }
 ```
 
-## Models Reference
+The verifier expects `t=<unix_seconds>,v1=<hex_hmac_sha256>` and
+validates the timestamp inside a ±5 minute window.
 
-| Model | Key Fields |
+> **Known issues with this implementation** — see
+> [`docs/proposed-issues/sdk-02-webhook-compare-timing.md`](docs/proposed-issues/sdk-02-webhook-compare-timing.md):
+> the final compare is a plain string `!=`, which is vulnerable to a
+> remote timing attack. A constant-time compare is required before any
+> webhook from a production Puente deployment is verified with this code.
+
+## Models
+
+| Model | Key fields |
 |---|---|
 | `Quote` | `id`, `sourceAmount`, `targetAmount`, `exchangeRate`, `fee`, `expiresAt` |
 | `Transfer` | `id`, `status`, `createdAt` |
 | `Account` | `id`, `firstName`, `lastName`, `email`, `phone` |
 | `ClabeInfo` | `clabe`, `bankName`, `bankCode`, `valid` |
 | `Money` | `cents`, `currency`, `amount` |
-| `WebhookEvent`| `type`, `data`, `createdAt` |
+| `WebhookEvent` | `type`, `data`, `createdAt` |
+
+JSON serialization is generated via `json_serializable`. After model
+edits, regenerate:
+
+```bash
+dart run build_runner build --delete-conflicting-outputs
+```
 
 ## Contributing
 
-1. Fork the repository
-2. Run `dart pub get`
-3. Run `dart run build_runner build` (for JSON serialization)
-4. Run tests with `dart test`
-5. Open a Pull Request
+1. Fork.
+2. `dart pub get`.
+3. `dart run build_runner build`.
+4. `dart test`.
+5. Read [`docs/contract-status.md`](docs/contract-status.md) before
+   adding a new resource — any API surface must match a route that
+   `Vysion-Software/Puente` is committed to serving (or that has an open
+   issue committing to it).
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT. See [LICENSE](LICENSE).

@@ -1,53 +1,86 @@
-import '../http/puente_http_client.dart';
 import '../models/account.dart';
+import '../transport/puente_request.dart';
+import 'resource_base.dart';
 
-class AccountsResource {
-  final PuenteHttpClient _client;
+/// `POST /v1/accounts` — register a sender or recipient.
+/// `GET /v1/accounts/:id` — retrieve.
+/// `PATCH /v1/accounts/:id` — partial update.
+///
+/// Accounts must be created before any transfer that references them.
+/// For US senders, KYC tier matters: [KycTier.tier1] suffices for small
+/// amounts; [KycTier.tier2] (full document verification) is required
+/// over a per-month threshold.
+class AccountsResource extends ResourceBase {
+  /// Build an [AccountsResource].
+  AccountsResource(super.transport);
 
-  AccountsResource(this._client);
-
+  /// Create a new account.
+  ///
+  /// [dateOfBirth] is sent as an ISO-8601 date-only string (`YYYY-MM-DD`).
   Future<Account> create({
     required String firstName,
     required String lastName,
     required String email,
     required String phone,
-    required DateTime dateOfBirth,
-    required String addressLine1,
-    required String city,
-    required String state,
-    required String postalCode,
-    required String country,
+    DateTime? dateOfBirth,
+    String? addressLine1,
+    String? city,
+    String? state,
+    String? postalCode,
+    String? country,
+    String? idempotencyKey,
   }) async {
-    final response = await _client.post(
-      '/accounts',
-      body: {
+    final response = await request(PuenteRequest(
+      method: 'POST',
+      path: '/accounts',
+      body: <String, dynamic>{
         'first_name': firstName,
         'last_name': lastName,
         'email': email,
         'phone': phone,
-        'date_of_birth': dateOfBirth.toIso8601String().split('T').first,
-        'address_line_1': addressLine1,
-        'city': city,
-        'state': state,
-        'postal_code': postalCode,
-        'country': country,
+        if (dateOfBirth != null) 'date_of_birth': _isoDate(dateOfBirth),
+        if (addressLine1 != null) 'address_line_1': addressLine1,
+        if (city != null) 'city': city,
+        if (state != null) 'state': state,
+        if (postalCode != null) 'postal_code': postalCode,
+        if (country != null) 'country': country,
       },
-    );
-    return Account.fromJson(response);
+      idempotencyKey: idempotencyKey ?? newIdempotencyKey(),
+    ));
+    return Account.fromJson(response.jsonObject);
   }
 
+  /// Retrieve an account by id.
   Future<Account> retrieve(String id) async {
-    final response = await _client.get('/accounts/$id');
-    return Account.fromJson(response);
+    final response = await request(PuenteRequest(
+      method: 'GET',
+      path: '/accounts/$id',
+    ));
+    return Account.fromJson(response.jsonObject);
   }
 
-  Future<Account> update(String id, {String? phone}) async {
-    final response = await _client.patch(
-      '/accounts/$id',
-      body: {
+  /// Partial update (only fields the server allows merchants to
+  /// mutate). KYC tier is never client-writable.
+  Future<Account> update(
+    String id, {
+    String? phone,
+    String? email,
+  }) async {
+    final response = await request(PuenteRequest(
+      method: 'PATCH',
+      path: '/accounts/$id',
+      body: <String, dynamic>{
         if (phone != null) 'phone': phone,
+        if (email != null) 'email': email,
       },
-    );
-    return Account.fromJson(response);
+    ));
+    return Account.fromJson(response.jsonObject);
+  }
+
+  String _isoDate(DateTime d) {
+    final y = d.year.toString().padLeft(4, '0');
+    final m = d.month.toString().padLeft(2, '0');
+    final day = d.day.toString().padLeft(2, '0');
+    return '$y-$m-$day';
   }
 }

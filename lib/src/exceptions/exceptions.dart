@@ -9,6 +9,7 @@ export 'api_exception.dart';
 export 'auth_exception.dart';
 export 'puente_exception.dart';
 export 'rate_limit_exception.dart';
+export 'stale_quote_exception.dart';
 export 'transport_exception.dart';
 export 'validation_exception.dart';
 export 'webhook_exception.dart';

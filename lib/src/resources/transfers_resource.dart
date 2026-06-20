@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:clock/clock.dart';
 
+import '../exceptions/stale_quote_exception.dart';
+import '../models/quote.dart';
 import '../models/transfer.dart';
 import '../transport/puente_request.dart';
 import 'resource_base.dart';
@@ -19,7 +21,11 @@ class TransfersResource extends ResourceBase {
   /// Build a [TransfersResource].
   TransfersResource(super.transport);
 
-  /// Create a transfer from a quote.
+  /// Create a transfer from a quote id.
+  ///
+  /// Prefer [createFromQuote] when the caller still has the [Quote] object —
+  /// that variant adds a client-side expiry guard so callers receive a typed
+  /// [StaleQuoteException] without a round-trip to the server.
   Future<Transfer> create({
     required String quoteId,
     required String receiverClabe,
@@ -41,6 +47,38 @@ class TransfersResource extends ResourceBase {
       idempotencyKey: idempotencyKey ?? newIdempotencyKey(),
     ));
     return Transfer.fromJson(response.jsonObject);
+  }
+
+  /// Same as [create] but takes the full [Quote] so the SDK can short-circuit
+  /// stale quotes before the network hop.
+  ///
+  /// Throws [StaleQuoteException] if [quote.isExpired] is true at call time —
+  /// callers should re-quote and retry with a fresh idempotency key derived
+  /// from the user gesture, not from a clock.
+  Future<Transfer> createFromQuote({
+    required Quote quote,
+    required String receiverClabe,
+    required String receiverName,
+    String? memo,
+    String? senderAccountId,
+    String? idempotencyKey,
+  }) async {
+    final DateTime now = clock.now().toUtc();
+    if (quote.isExpired(now)) {
+      throw StaleQuoteException(
+        quoteId: quote.id,
+        expiresAt: quote.expiresAt,
+        detectedAt: now,
+      );
+    }
+    return create(
+      quoteId: quote.id,
+      receiverClabe: receiverClabe,
+      receiverName: receiverName,
+      memo: memo,
+      senderAccountId: senderAccountId,
+      idempotencyKey: idempotencyKey,
+    );
   }
 
   /// Retrieve a transfer by id.

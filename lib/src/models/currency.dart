@@ -1,9 +1,9 @@
 /// Currencies the Puente Railway ledger tracks.
 ///
 /// Mirrors `puente_core::Currency` in the Rust workspace. Values are wired
-/// as UPPERCASE strings (`"USD"`, `"MXN"`, `"USDC"`, `"CETES"`, `"SOL"`) on
-/// the JSON boundary so the Dart SDK and Rust server stay in sync without a
-/// schema translation layer.
+/// as UPPERCASE strings (`"USD"`, `"MXN"`, `"USDC"`, `"OUSD"`, `"CETES"`,
+/// `"SOL"`) on the JSON boundary so the Dart SDK and Rust server stay in
+/// sync without a schema translation layer.
 ///
 /// **Minor units.** Every monetary amount in this SDK is an integer count of
 /// minor units. The number of decimal places per currency lives on the enum
@@ -18,6 +18,10 @@ enum Currency {
 
   /// SPL USDC on Solana. 6 decimals.
   usdc('USDC', 6),
+
+  /// Ondo US Dollar Yield token on Solana. 6 decimals, yield-bearing.
+  /// Used by the treasury as a same-region settlement leg.
+  ousd('OUSD', 6),
 
   /// Etherfuse-issued CETES stablebond on Solana. 6 decimals, yield-bearing.
   cetes('CETES', 6),
@@ -57,8 +61,8 @@ enum Currency {
 
   /// 10^[decimals] — the scale factor between minor and major units.
   ///
-  /// Returned as `int` (safe for all five currencies — max is 10^9 which
-  /// fits comfortably in a signed 64-bit int).
+  /// Returned as `int` (safe for every supported currency — max is 10^9
+  /// which fits comfortably in a signed 64-bit int).
   int get scale {
     var s = 1;
     for (var i = 0; i < decimals; i++) {

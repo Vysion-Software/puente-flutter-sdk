@@ -2,7 +2,10 @@ import 'dart:convert';
 
 import 'package:clock/clock.dart';
 import 'package:crypto/crypto.dart';
+// WebhookException / WebhookEventType still live in the main barrel; the
+// verifier itself is server-side-only and ships in `server.dart`.
 import 'package:puente_railway/puente_railway.dart';
+import 'package:puente_railway/server.dart';
 import 'package:test/test.dart';
 
 /// Regression suite for `sdk-01-webhook-format-mismatch`,

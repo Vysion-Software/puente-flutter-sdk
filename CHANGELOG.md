@@ -1,5 +1,90 @@
 # Changelog
 
+## 0.3.0 — 2026-07-05
+
+**Treasury & Profit Management alignment.** The SDK is now a pure typed
+client of the Puente Rust backend: it never calculates fees, FX, totals,
+or margins — it deserializes what the backend decided and exposes it
+safely.
+
+### New treasury models
+- `FeeBreakdown` — itemized backend fees (`flat_fee_minor`,
+  `fx_spread_fee_minor`, `vendor_fee_minor`, `total_fee_minor`,
+  `currency`) as tagged `Money` values. Decode-only; the total is taken
+  verbatim from the wire, never summed locally.
+- `VendorCostBreakdown` — per-vendor settlement costs on receipts
+  (`etherfuse_minor`, `network_minor`, `other_minor`). Decode-only.
+- `TransferReceipt` + `ReceiptMetadata` — the settlement receipt from
+  `GET /v1/transfers/{id}/receipt`, including the cNFT proof block
+  (`folio`, `asset_id`, `metadata_uri`, `mint_signature`).
+- `TransferIntent` — the typed `POST /v1/transfers` request body. The
+  intent is the only thing a client submits; amounts and fees always
+  come from the referenced backend quote.
+- `CurrencyLeg` enum (`USDC` / `OUSD` / `CETES`, unknown-tolerant) and a
+  new `Currency.ousd` value.
+
+### Real-backend quote contract
+- `Quote.fromJson` now also accepts the current backend shape
+  (`quote_id`, `source_amount_minor` / `destination_amount_minor`,
+  `fx_rate` decimal string, `total_fee_minor`, `total_cost_minor`,
+  `transfer_type`, `currency_leg`, `fee_breakdown`) alongside the legacy
+  shape. New optional fields: `Quote.feeBreakdown`, `Quote.currencyLeg`,
+  `Quote.transferType`, `Quote.totalCost`. `exchangeRate` is documented
+  display-only (parsed from the wire string).
+- `Transfer` gains optional `feeBreakdown`, `quoteId`, and
+  `transferType`, parsed when the server sends them.
+- `QuotesResource.create` sends both the legacy body keys and the
+  current backend keys (`source_amount_minor`, `destination_currency`)
+  in one JSON object, plus an optional `beneficiaryCountry` parameter.
+
+### Receipt endpoint + intents
+- `TransfersResource.receipt(id)` — `GET /v1/transfers/{id}/receipt`,
+  returns a `TransferReceipt` (409 `receipt_unavailable: …` until the
+  transfer settles).
+- `TransfersResource.createFromIntent(intent)` — execute a
+  `TransferIntent` directly. `create` gains optional `senderUserId` /
+  `receiverUserId` for P2P transfers.
+
+### Mock stripped of financial computation
+- `MockTransport` no longer computes fees or FX (the 50 bps fee math and
+  net-of-fee conversion are gone). It now serves clearly documented
+  **dev fixtures** mirroring backend defaults: same-currency quotes have
+  a **zero** fee and `fx_rate "1"`; cross-currency quotes use a flat
+  100-minor-unit fee fixture and a fixed fixture rate table. Real
+  numbers ALWAYS come from the backend quote.
+- Mock quotes are stored in-memory; mock transfers resolve the
+  referenced quote and use its amounts **verbatim** — unknown
+  `quote_id` → 404 `quote_not_found`, expired → 409 `quote_expired`.
+- Mock now emits the full real-backend quote response shape alongside
+  the legacy keys, and serves `GET /transfers/{id}/receipt` with a
+  deterministic cNFT fixture.
+- `PuenteClient` now **throws `StateError`** when
+  `PuenteEnvironment.mock` is used in a release build
+  (`dart.vm.product`).
+
+### BREAKING: import moves
+- `MockTransport` moved out of the main barrel to
+  `package:puente_railway/testing.dart` (dev-only fixture adapter).
+  `PuenteClient.mock()` keeps working unchanged.
+- `WebhookVerifier` moved out of the main barrel to
+  `package:puente_railway/server.dart` — webhook HMAC secrets must
+  NEVER ship in a mobile app.
+
+### Mobile-safe auth
+- New `PuenteConfig.tokenProvider` (`Future<String> Function()`): when
+  set, `HttpTransport` resolves the `Authorization` bearer fresh on
+  every request attempt from your backend-minted short-lived session
+  token. `apiKey` is now optional; `sk_` merchant keys are documented
+  SERVER-SIDE ONLY. Config throws `ArgumentError` when neither source is
+  provided (non-mock); `tokenProvider` wins when both are set.
+
+### Housekeeping
+- Dropped unused `json_annotation` / `json_serializable` /
+  `build_runner` dependencies (models are hand-written; no `.g.dart`
+  files exist).
+- New GitHub Actions CI: format check, `dart analyze --fatal-infos`,
+  `dart test` on pushes to `main` and PRs.
+
 ## 0.2.0 — 2026-06-11
 
 **Production-grade rewrite.** Breaking API changes; existing 0.1.x

@@ -18,7 +18,18 @@ class QuotesResource extends ResourceBase {
   ///
   /// [sourceAmount] is what the sender will be debited; the server
   /// returns a [Quote] with the matching [Quote.targetAmount] and
-  /// [Quote.fee] in the source currency.
+  /// [Quote.fee] in the source currency. All FX, fee, and total math is
+  /// done by the backend — the SDK only relays the request and
+  /// deserializes the answer.
+  ///
+  /// [beneficiaryCountry] is the optional ISO country of the beneficiary
+  /// (e.g. `"MX"`), forwarded as `beneficiary_country`.
+  ///
+  /// The request body carries both the current backend keys
+  /// (`source_amount_minor`, `destination_currency`) and the legacy keys
+  /// (`source_amount`, `target_currency`) in one object — the axum
+  /// backend ignores unknown fields, so one wire shape serves both server
+  /// generations.
   ///
   /// Pass [idempotencyKey] to dedup repeated quote requests for the
   /// same UX gesture (e.g. tapping "preview" twice). The SDK generates
@@ -26,15 +37,22 @@ class QuotesResource extends ResourceBase {
   Future<Quote> create({
     required Money sourceAmount,
     required Currency targetCurrency,
+    String? beneficiaryCountry,
     String? idempotencyKey,
   }) async {
     final response = await request(PuenteRequest(
       method: 'POST',
       path: '/quotes',
       body: <String, dynamic>{
+        // Legacy shape (older servers + stored fixtures).
         'source_amount': sourceAmount.toJson(),
         'source_currency': sourceAmount.currency.code,
         'target_currency': targetCurrency.code,
+        // Current backend shape (POST /v1/quotes).
+        'source_amount_minor': sourceAmount.minorUnits,
+        'destination_currency': targetCurrency.code,
+        if (beneficiaryCountry != null)
+          'beneficiary_country': beneficiaryCountry,
       },
       idempotencyKey: idempotencyKey ?? newIdempotencyKey(),
     ));

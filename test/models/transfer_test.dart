@@ -59,6 +59,36 @@ void main() {
       expect(t.memo, isNull);
       expect(t.updatedAt, isNull);
       expect(t.reference, isNull);
+      expect(t.feeBreakdown, isNull);
+      expect(t.quoteId, isNull);
+      expect(t.transferType, isNull);
+    });
+
+    test('fromJson parses fee_breakdown, quote_id, transfer_type', () {
+      final t = Transfer.fromJson({
+        'id': 'tx_3',
+        'status': 'settled',
+        'source_amount': {'amount': 10000, 'currency': 'USD'},
+        'target_amount': {'amount': 197300, 'currency': 'MXN'},
+        'created_at': '2026-07-01T00:00:00Z',
+        'quote_id': 'c9f1a2b3-0000-4000-8000-000000000007',
+        'transfer_type': 'cross_border',
+        'fee_breakdown': {
+          'flat_fee_minor': 100,
+          'fx_spread_fee_minor': 0,
+          'vendor_fee_minor': 0,
+          'total_fee_minor': 100,
+          'currency': 'USD',
+        },
+      });
+      expect(t.quoteId, 'c9f1a2b3-0000-4000-8000-000000000007');
+      expect(t.transferType, 'cross_border');
+      expect(t.feeBreakdown, isNotNull);
+      expect(t.feeBreakdown!.flatFee, const Money.fromMinor(100, Currency.usd));
+      expect(
+          t.feeBreakdown!.totalFee, const Money.fromMinor(100, Currency.usd));
+      // Round-trips through toJson.
+      expect(Transfer.fromJson(t.toJson()), t);
     });
   });
 }

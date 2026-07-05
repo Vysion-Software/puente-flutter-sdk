@@ -1,5 +1,6 @@
 import 'package:equatable/equatable.dart';
 
+import 'fee_breakdown.dart';
 import 'money.dart';
 
 /// Lifecycle states a transfer passes through, from creation to terminal
@@ -86,6 +87,17 @@ class Transfer extends Equatable {
   /// SPEI tracking key). `null` while still processing.
   final String? reference;
 
+  /// Itemized backend fees (`fee_breakdown`), when the server sent them.
+  /// Backend truth — never recomputed client-side.
+  final FeeBreakdown? feeBreakdown;
+
+  /// The quote this transfer executed (`quote_id`), when the server sent it.
+  final String? quoteId;
+
+  /// Backend transfer classification (`"p2p_same_region"`,
+  /// `"cross_border"`, …), when the server sent it.
+  final String? transferType;
+
   /// Build a [Transfer]. All money-bearing fields are [Money] (no doubles).
   const Transfer({
     required this.id,
@@ -98,6 +110,9 @@ class Transfer extends Equatable {
     this.memo,
     this.updatedAt,
     this.reference,
+    this.feeBreakdown,
+    this.quoteId,
+    this.transferType,
   });
 
   /// Decode from the JSON shape Puente uses on the wire.
@@ -116,6 +131,12 @@ class Transfer extends Equatable {
             ? DateTime.parse(json['updated_at'] as String).toUtc()
             : null,
         reference: json['reference'] as String?,
+        feeBreakdown: json['fee_breakdown'] is Map
+            ? FeeBreakdown.fromJson(
+                (json['fee_breakdown'] as Map).cast<String, dynamic>())
+            : null,
+        quoteId: json['quote_id'] as String?,
+        transferType: json['transfer_type'] as String?,
       );
 
   /// Encode to the JSON shape Puente accepts on the wire.
@@ -131,6 +152,9 @@ class Transfer extends Equatable {
         if (updatedAt != null)
           'updated_at': updatedAt!.toUtc().toIso8601String(),
         if (reference != null) 'reference': reference,
+        if (feeBreakdown != null) 'fee_breakdown': feeBreakdown!.toJson(),
+        if (quoteId != null) 'quote_id': quoteId,
+        if (transferType != null) 'transfer_type': transferType,
       };
 
   @override
@@ -145,5 +169,8 @@ class Transfer extends Equatable {
         createdAt,
         updatedAt,
         reference,
+        feeBreakdown,
+        quoteId,
+        transferType,
       ];
 }

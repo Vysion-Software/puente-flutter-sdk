@@ -5,11 +5,14 @@ import 'package:clock/clock.dart';
 import '../exceptions/stale_quote_exception.dart';
 import '../models/quote.dart';
 import '../models/transfer.dart';
+import '../models/transfer_intent.dart';
+import '../models/transfer_receipt.dart';
 import '../transport/puente_request.dart';
 import 'resource_base.dart';
 
 /// `POST /v1/transfers` — execute a quoted transfer.
 /// `GET /v1/transfers/:id` — retrieve current state.
+/// `GET /v1/transfers/:id/receipt` — settlement receipt (once settled).
 /// `GET /v1/transfers` — list recent transfers.
 /// `POST /v1/transfers/:id/cancel` — cancel before settlement.
 ///
@@ -26,12 +29,18 @@ class TransfersResource extends ResourceBase {
   /// Prefer [createFromQuote] when the caller still has the [Quote] object —
   /// that variant adds a client-side expiry guard so callers receive a typed
   /// [StaleQuoteException] without a round-trip to the server.
+  ///
+  /// For P2P (same-region) transfers the backend requires both
+  /// [senderUserId] and [receiverUserId]; for cross-border transfers it
+  /// requires an 18-digit [receiverClabe].
   Future<Transfer> create({
     required String quoteId,
     required String receiverClabe,
     required String receiverName,
     String? memo,
     String? senderAccountId,
+    String? senderUserId,
+    String? receiverUserId,
     String? idempotencyKey,
   }) async {
     final response = await request(PuenteRequest(
@@ -43,7 +52,28 @@ class TransfersResource extends ResourceBase {
         'receiver_name': receiverName,
         if (memo != null) 'memo': memo,
         if (senderAccountId != null) 'sender_account_id': senderAccountId,
+        if (senderUserId != null) 'sender_user_id': senderUserId,
+        if (receiverUserId != null) 'receiver_user_id': receiverUserId,
       },
+      idempotencyKey: idempotencyKey ?? newIdempotencyKey(),
+    ));
+    return Transfer.fromJson(response.jsonObject);
+  }
+
+  /// Create a transfer from a [TransferIntent] — the typed request body
+  /// for `POST /v1/transfers`.
+  ///
+  /// The intent is the only thing the client submits; every amount, fee,
+  /// and rate comes from the backend quote the intent references, so
+  /// there is nothing money-shaped for a client to get wrong.
+  Future<Transfer> createFromIntent(
+    TransferIntent intent, {
+    String? idempotencyKey,
+  }) async {
+    final response = await request(PuenteRequest(
+      method: 'POST',
+      path: '/transfers',
+      body: intent.toJson(),
       idempotencyKey: idempotencyKey ?? newIdempotencyKey(),
     ));
     return Transfer.fromJson(response.jsonObject);
@@ -88,6 +118,20 @@ class TransfersResource extends ResourceBase {
       path: '/transfers/$id',
     ));
     return Transfer.fromJson(response.jsonObject);
+  }
+
+  /// Retrieve the settlement receipt for a settled transfer —
+  /// `GET /v1/transfers/{id}/receipt`.
+  ///
+  /// The backend only issues receipts for transfers in the `settled`
+  /// state; before that it answers `409` with an error of the form
+  /// `receipt_unavailable: …`, surfaced here as an `ApiException`.
+  Future<TransferReceipt> receipt(String transferId) async {
+    final response = await request(PuenteRequest(
+      method: 'GET',
+      path: '/transfers/$transferId/receipt',
+    ));
+    return TransferReceipt.fromJson(response.jsonObject);
   }
 
   /// List recent transfers, newest first.

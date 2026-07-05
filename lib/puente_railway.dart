@@ -32,7 +32,8 @@ library puente_railway;
 
 // Client + config.
 export 'src/client/puente_client.dart';
-export 'src/client/puente_config.dart' show PuenteConfig, PuenteEnvironment;
+export 'src/client/puente_config.dart'
+    show PuenteConfig, PuenteEnvironment, PuenteTokenProvider;
 export 'src/client/puente_remittance.dart';
 
 // Models.
@@ -48,14 +49,14 @@ export 'src/resources/transfers_resource.dart';
 export 'src/exceptions/exceptions.dart';
 
 // Transport (advanced — most apps don't need these).
+//
+// `MockTransport` moved to `package:puente_railway/testing.dart` (dev-only
+// fixtures). `WebhookVerifier` moved to `package:puente_railway/server.dart`
+// (webhook HMAC secrets are server-side only).
 export 'src/transport/http_transport.dart';
-export 'src/transport/mock_transport.dart';
 export 'src/transport/puente_request.dart';
 export 'src/transport/puente_response.dart';
 export 'src/transport/puente_transport.dart';
 
 // Observability.
 export 'src/observability/puente_observer.dart';
-
-// Webhooks.
-export 'src/webhooks/webhook_verifier.dart';

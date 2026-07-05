@@ -95,7 +95,7 @@ class TransfersResource extends ResourceBase {
   }) async {
     final DateTime now = clock.now().toUtc();
     if (quote.isExpired(now)) {
-      throw StaleQuoteException(
+      throw StaleQuoteException.clientGuard(
         quoteId: quote.id,
         expiresAt: quote.expiresAt,
         detectedAt: now,

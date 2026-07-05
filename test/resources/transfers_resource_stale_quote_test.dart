@@ -58,7 +58,7 @@ void main() {
 
     test('StaleQuoteException is a PuenteException', () {
       final DateTime t = DateTime.utc(2026, 6, 20);
-      final StaleQuoteException e = StaleQuoteException(
+      final StaleQuoteException e = StaleQuoteException.clientGuard(
         quoteId: 'qt_x',
         expiresAt: t,
         detectedAt: t.add(const Duration(seconds: 1)),

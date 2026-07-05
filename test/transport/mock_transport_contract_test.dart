@@ -201,15 +201,17 @@ void main() {
       // Mock quotes live 2 minutes; three minutes later the quote is dead.
       await withClock(Clock.fixed(t0.add(const Duration(minutes: 3))),
           () async {
+        // Server-emitted 409 quote_expired now maps to the same typed
+        // exception the client-side createFromQuote guard raises, so
+        // callers only need one catch — see resource_base.dart mapping.
         await expectLater(
           () => client.transfers.create(
             quoteId: q.id,
             receiverClabe: '012180012345678901',
             receiverName: 'María García López',
           ),
-          throwsA(isA<ApiException>()
-              .having((e) => e.statusCode, 'statusCode', 409)
-              .having((e) => e.code, 'code', 'quote_expired')),
+          throwsA(isA<StaleQuoteException>()
+              .having((e) => e.serverEmitted, 'serverEmitted', true)),
         );
       });
     });

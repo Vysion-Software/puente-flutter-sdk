@@ -55,10 +55,20 @@ class PuenteRemittance {
     String? senderAccountId,
     String? idempotencyKey,
   }) async {
+    // The caller's idempotency key covers the LOGICAL send-money
+    // operation. Reusing the exact same string against two different
+    // endpoints would collide with any server (or fixture) whose
+    // idempotency store is keyed by request body hash — and just plain
+    // conflicts with the SDK's own mock replay cache. Derive per-hop
+    // keys so a client-driven retry replays both hops safely without
+    // one endpoint's response replaying at the other.
+    final quoteKey = idempotencyKey == null ? null : '$idempotencyKey:quote';
+    final transferKey =
+        idempotencyKey == null ? null : '$idempotencyKey:transfer';
     final quote = await _quotes.create(
       sourceAmount: sourceAmount,
       targetCurrency: targetCurrency,
-      idempotencyKey: idempotencyKey,
+      idempotencyKey: quoteKey,
     );
     final transfer = await _transfers.create(
       quoteId: quote.id,
@@ -66,7 +76,7 @@ class PuenteRemittance {
       receiverName: receiverName,
       memo: memo,
       senderAccountId: senderAccountId,
-      idempotencyKey: idempotencyKey,
+      idempotencyKey: transferKey,
     );
     return RemittanceResult(quote: quote, transfer: transfer);
   }

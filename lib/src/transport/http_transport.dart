@@ -61,7 +61,18 @@ class HttpTransport implements PuenteTransport {
       attempt += 1;
       // Re-merged per attempt: a tokenProvider mints a fresh short-lived
       // token for every try, so a retry never replays an expired bearer.
-      final mergedHeaders = await _mergeHeaders(request);
+      // A tokenProvider failure must not escape as a raw exception (the
+      // SDK's contract is that transport errors surface as
+      // TransportException) — wrap and rethrow.
+      final Map<String, String> mergedHeaders;
+      try {
+        mergedHeaders = await _mergeHeaders(request);
+      } catch (e) {
+        // A tokenProvider failure must not escape as a raw exception:
+        // the SDK's contract is that transport-time failures surface as
+        // TransportException so callers only need one catch site.
+        throw TransportException('tokenProvider failed: $e', cause: e);
+      }
       final started = clock.now();
 
       _observer.onRequest(PuenteRequestEvent(

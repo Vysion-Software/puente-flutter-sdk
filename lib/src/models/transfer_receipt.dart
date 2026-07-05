@@ -88,13 +88,18 @@ class TransferReceipt extends Equatable {
       TransferReceipt(
         transactionId: json['transaction_id'] as String,
         status: TransferStatus.fromWire(json['status'] as String?),
-        transferType: json['transfer_type'] as String,
+        // `transfer_type` and `fx_rate` come from
+        // external_transfers.metadata->>… which can be JSON null for
+        // pre-treasury transfers (or, in tests, for backends that omit
+        // the field). Fall back to safe defaults rather than throwing —
+        // callers already treat both as opaque display strings.
+        transferType: (json['transfer_type'] as String?) ?? '',
         currencyLeg: CurrencyLeg.fromWire(json['currency_leg'] as String?),
         sourceAmount: Money.fromJson(
             (json['source_amount'] as Map).cast<String, dynamic>()),
         targetAmount: Money.fromJson(
             (json['target_amount'] as Map).cast<String, dynamic>()),
-        fxRate: json['fx_rate'] as String,
+        fxRate: (json['fx_rate'] as String?) ?? '',
         feeBreakdown: json['fee_breakdown'] is Map
             ? FeeBreakdown.fromJson(
                 (json['fee_breakdown'] as Map).cast<String, dynamic>())

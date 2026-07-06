@@ -9,7 +9,16 @@ permissions:
   contents: read
 
 jobs:
+  no-secrets-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: No-secrets client audit (SRS FR-9)
+        run: bash tool/no_secrets_audit.sh
+
   build:
+    needs: no-secrets-audit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0

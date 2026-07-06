@@ -255,6 +255,13 @@ The transport layer is fully abstract — write your own
 swap in a proxy. See [`docs/contract-status.md`](docs/contract-status.md)
 for what each Puente backend route currently serves.
 
+## Security boundary
+
+This package is a typed client only: it holds **no secrets, credentials,
+or fee/FX math** — CI enforces this via `tool/no_secrets_audit.sh` (SRS
+FR-9). `sk_` API keys are server-side only; mobile apps must authenticate
+with `tokenProvider` instead.
+
 ## Contributing
 
 ```bash

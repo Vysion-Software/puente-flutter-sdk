@@ -9,6 +9,7 @@
 /// * [production] — real money, real CETES, real SPEI.
 enum PuenteEnvironment {
   /// In-memory mock. No HTTP traffic. Default for `PuenteClient.mock()`.
+  /// Dev/test-only — `PuenteClient` refuses it in release builds.
   mock,
 
   /// Puente devnet (`https://api-testnet.puenterailway.com/v1`).
@@ -21,17 +22,49 @@ enum PuenteEnvironment {
   production,
 }
 
+/// Asynchronous per-request bearer-token source.
+///
+/// Return a fresh, short-lived user-session token minted by your backend.
+/// See [PuenteConfig.tokenProvider].
+typedef PuenteTokenProvider = Future<String> Function();
+
 /// Immutable configuration for a [PuenteClient].
 ///
 /// Construct via [PuenteConfig.new] when you want to set every option, or
 /// the [PuenteConfig.testnet] / [PuenteConfig.sandbox] / [PuenteConfig.production]
 /// helpers for the common cases.
+///
+/// ## Choosing an auth source
+///
+/// Exactly one credential source is expected:
+///
+/// * **Server / CLI** — pass [apiKey]. `sk_` merchant keys are
+///   **SERVER-SIDE ONLY** and must never be embedded in mobile builds
+///   (anyone can extract strings from an app bundle).
+/// * **Mobile / Flutter** — pass [tokenProvider]. The SDK asks it for a
+///   fresh short-lived user-session token (minted by your backend) on
+///   every request.
+///
+/// If both are supplied, [tokenProvider] wins — this eases migration from
+/// key-based to token-based auth. Supplying neither (outside
+/// [PuenteEnvironment.mock]) throws [ArgumentError].
 class PuenteConfig {
   /// API key Puente issued to this merchant. Sent as
-  /// `Authorization: Bearer <key>` on every authenticated request.
+  /// `Authorization: Bearer <key>` on every authenticated request when no
+  /// [tokenProvider] is configured.
   ///
-  /// May be empty in [PuenteEnvironment.mock]; required everywhere else.
+  /// **`sk_` merchant keys are SERVER-SIDE ONLY** — never embed one in a
+  /// mobile build; use [tokenProvider] there instead. May be empty in
+  /// [PuenteEnvironment.mock].
   final String apiKey;
+
+  /// Per-request bearer-token source for mobile-safe auth.
+  ///
+  /// When set, `HttpTransport` awaits it on **every request attempt** and
+  /// sends `Authorization: Bearer <token>` — so short-lived user-session
+  /// tokens (minted by your backend) stay fresh across retries. Takes
+  /// precedence over [apiKey] when both are configured.
+  final PuenteTokenProvider? tokenProvider;
 
   /// Optional merchant identifier. When set, sent as
   /// `X-Puente-Merchant-Id` so the server can scope rate limits and
@@ -67,8 +100,13 @@ class PuenteConfig {
   final String userAgent;
 
   /// Build a [PuenteConfig] with explicit values.
-  const PuenteConfig({
-    required this.apiKey,
+  ///
+  /// Throws [ArgumentError] when neither [apiKey] nor [tokenProvider] is
+  /// provided for a non-mock environment — every real deployment needs
+  /// exactly one auth source ([tokenProvider] wins when both are set).
+  PuenteConfig({
+    this.apiKey = '',
+    this.tokenProvider,
     required this.environment,
     this.merchantId,
     this.baseUrlOverride,
@@ -77,7 +115,17 @@ class PuenteConfig {
     this.baseRetryDelay = const Duration(milliseconds: 500),
     this.maxRetryDelay = const Duration(seconds: 10),
     this.userAgent = 'puente_railway/$packageVersion',
-  });
+  }) {
+    if (environment != PuenteEnvironment.mock &&
+        apiKey.isEmpty &&
+        tokenProvider == null) {
+      throw ArgumentError(
+        'PuenteConfig: an auth source is required — pass apiKey '
+        '(server-side sk_ keys only) or tokenProvider (mobile-safe '
+        'short-lived session tokens).',
+      );
+    }
+  }
 
   /// Convenience for an in-memory mock client.
   factory PuenteConfig.mock({
@@ -91,36 +139,48 @@ class PuenteConfig {
       );
 
   /// Convenience for the Puente devnet (testnet).
+  ///
+  /// Pass [apiKey] server-side or [tokenProvider] in mobile builds.
   factory PuenteConfig.testnet({
-    required String apiKey,
+    String apiKey = '',
+    PuenteTokenProvider? tokenProvider,
     String? merchantId,
     Uri? baseUrlOverride,
   }) =>
       PuenteConfig(
         apiKey: apiKey,
+        tokenProvider: tokenProvider,
         merchantId: merchantId,
         environment: PuenteEnvironment.testnet,
         baseUrlOverride: baseUrlOverride,
       );
 
   /// Convenience for the sandbox environment.
+  ///
+  /// Pass [apiKey] server-side or [tokenProvider] in mobile builds.
   factory PuenteConfig.sandbox({
-    required String apiKey,
+    String apiKey = '',
+    PuenteTokenProvider? tokenProvider,
     String? merchantId,
   }) =>
       PuenteConfig(
         apiKey: apiKey,
+        tokenProvider: tokenProvider,
         merchantId: merchantId,
         environment: PuenteEnvironment.sandbox,
       );
 
   /// Convenience for the production environment.
+  ///
+  /// Pass [apiKey] server-side or [tokenProvider] in mobile builds.
   factory PuenteConfig.production({
-    required String apiKey,
+    String apiKey = '',
+    PuenteTokenProvider? tokenProvider,
     String? merchantId,
   }) =>
       PuenteConfig(
         apiKey: apiKey,
+        tokenProvider: tokenProvider,
         merchantId: merchantId,
         environment: PuenteEnvironment.production,
       );
@@ -148,4 +208,4 @@ class PuenteConfig {
 
 /// Current SDK package version, mirrored from pubspec.yaml. Bump on
 /// release; CI checks the two are in sync.
-const String packageVersion = '0.2.0';
+const String packageVersion = '0.3.0';

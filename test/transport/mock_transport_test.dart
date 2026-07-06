@@ -1,5 +1,6 @@
 import 'package:clock/clock.dart';
 import 'package:puente_railway/puente_railway.dart';
+import 'package:puente_railway/testing.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -16,7 +17,59 @@ void main() {
 
     tearDown(() => transport.close());
 
-    test('POST /quotes returns a quote with correct minor-unit math', () async {
+    /// Creates a quote through the transport and returns its wire doc.
+    Future<Map<String, dynamic>> createQuote({
+      int sourceMinor = 10000,
+      String sourceCurrency = 'USD',
+      String destinationCurrency = 'MXN',
+    }) async {
+      final response = await transport.send(PuenteRequest(
+        method: 'POST',
+        path: '/quotes',
+        body: <String, dynamic>{
+          'source_amount_minor': sourceMinor,
+          'source_currency': sourceCurrency,
+          'destination_currency': destinationCurrency,
+        },
+      ));
+      expect(response.statusCode, 200);
+      return response.jsonObject;
+    }
+
+    test('POST /quotes emits the real-backend shape plus legacy keys',
+        () async {
+      final body = await createQuote();
+      // Real-backend shape.
+      expect(body['quote_id'], startsWith('qt_'));
+      expect(body['source_amount_minor'], 10000);
+      expect(body['source_currency'], 'USD');
+      // Fixture rate 19.73, gross conversion — fees are NOT netted into
+      // the destination by the mock (that's backend policy, not SDK math).
+      expect(body['destination_amount_minor'], 197300);
+      expect(body['destination_currency'], 'MXN');
+      expect(body['fx_rate'], '19.73');
+      expect(body['total_fee_minor'],
+          MockTransport.crossBorderFlatFeeFixtureMinor);
+      expect(body['total_cost_minor'],
+          10000 + MockTransport.crossBorderFlatFeeFixtureMinor);
+      expect(body['transfer_type'], 'cross_border');
+      expect(body['currency_leg'], 'CETES');
+      expect(body['fee_breakdown'], {
+        'flat_fee_minor': 100,
+        'fx_spread_fee_minor': 0,
+        'vendor_fee_minor': 0,
+        'total_fee_minor': 100,
+        'currency': 'USD',
+      });
+      // Legacy shape, kept alongside.
+      expect(body['id'], body['quote_id']);
+      expect(body['source_amount'], {'amount': 10000, 'currency': 'USD'});
+      expect(body['target_amount'], {'amount': 197300, 'currency': 'MXN'});
+      expect(body['exchange_rate'], 19.73);
+      expect(body['fee'], {'amount': 100, 'currency': 'USD'});
+    });
+
+    test('POST /quotes accepts the legacy body shape', () async {
       final response = await transport.send(PuenteRequest(
         method: 'POST',
         path: '/quotes',
@@ -26,24 +79,17 @@ void main() {
           'target_currency': 'MXN',
         },
       ));
-      expect(response.statusCode, 201);
-      final body = response.jsonObject;
-      expect(body['id'], startsWith('qt_'));
-      expect(body['source_amount'], {'amount': 10000, 'currency': 'USD'});
-      // 0.5% fee, then 19.73x — exact: (10000 - 50) * 19.73 = 196331.5
-      // Mock uses int truncation: ((9950 * 100) * 19.73 ~/ 100) = 196313 to 196335
-      // Verify ballpark via target amount > 19x source (sanity).
-      final target = body['target_amount'] as Map;
-      expect((target['amount'] as int) > 19000 * 9, isTrue);
-      expect(target['currency'], 'MXN');
+      expect(response.statusCode, 200);
+      expect(response.jsonObject['destination_amount_minor'], 197300);
     });
 
     test('POST /transfers + GET /transfers/:id flow', () async {
+      final quote = await createQuote();
       final create = await transport.send(PuenteRequest(
         method: 'POST',
         path: '/transfers',
         body: <String, dynamic>{
-          'quote_id': 'qt_x',
+          'quote_id': quote['quote_id'],
           'receiver_clabe': '012180012345678901',
           'receiver_name': 'Maria Garcia',
         },
@@ -54,6 +100,9 @@ void main() {
       expect(id, startsWith('tx_'));
       // settlementLatency = 0 → status is settled immediately.
       expect(create.jsonObject['status'], 'settled');
+      // Amounts come from the quote verbatim.
+      expect(create.jsonObject['source_amount'], quote['source_amount']);
+      expect(create.jsonObject['target_amount'], quote['target_amount']);
 
       final get = await transport.send(PuenteRequest(
         method: 'GET',
@@ -64,8 +113,9 @@ void main() {
     });
 
     test('Idempotency-Key replays the same response', () async {
+      final quote = await createQuote();
       final body = <String, dynamic>{
-        'quote_id': 'qt_x',
+        'quote_id': quote['quote_id'],
         'receiver_clabe': '012180012345678901',
         'receiver_name': 'Maria Garcia',
       };
@@ -125,11 +175,12 @@ void main() {
         networkLatency: Duration.zero,
       );
 
+      final quote = await createQuote();
       final create = await transport.send(PuenteRequest(
         method: 'POST',
         path: '/transfers',
         body: <String, dynamic>{
-          'quote_id': 'qt_x',
+          'quote_id': quote['quote_id'],
           'receiver_clabe': '012180012345678901',
           'receiver_name': 'Maria Garcia',
         },

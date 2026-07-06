@@ -113,7 +113,17 @@ class PuenteClient {
         remittance = PuenteRemittance(
           quotes: QuotesResource(transport),
           transfers: TransfersResource(transport),
-        );
+        ) {
+    // The mock backend serves dev fixtures (fake fees, fake FX). Shipping
+    // it in a release build would show users invented money math — refuse.
+    if (config.environment == PuenteEnvironment.mock &&
+        const bool.fromEnvironment('dart.vm.product')) {
+      throw StateError(
+        'PuenteEnvironment.mock is dev/test-only and cannot be used in '
+        'release builds',
+      );
+    }
+  }
 
   /// The configuration this client was built with.
   final PuenteConfig config;

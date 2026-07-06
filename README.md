@@ -39,7 +39,7 @@ The SDK's design takes inspiration from
   mismatches throw at compile-time-ish (instant `StateError`).
 * **Predictable error mapping.** Every failure path is a subclass of
   `PuenteException`; one `catch` covers them all.
-* **Tested.** 62 unit + integration tests under `dart test`. The
+* **Tested.** 104 unit + integration tests under `dart test`. The
   `MockTransport` runs the entire `quote → transfer → watch` flow
   offline, deterministically, in milliseconds.
 
@@ -131,8 +131,10 @@ with integer math, never `double.parse`, so `0.1 + 0.2` is exactly
 
 ## Webhook verification
 
-`WebhookVerifier` accepts both signature formats Puente uses on the
-wire:
+`WebhookVerifier` is **server-side only** (since 0.3.0 it ships in
+`package:puente_railway/server.dart`, not the main barrel) — webhook
+HMAC secrets must never be embedded in a mobile app. It accepts both
+signature formats Puente uses on the wire:
 
 * **Stripe-style** (`t=<unix_seconds>,v1=<hex>`) — Puente's outbound
   merchant webhooks.
@@ -140,6 +142,8 @@ wire:
   Puente's inbound Etherfuse events.
 
 ```dart
+import 'package:puente_railway/server.dart';
+
 const verifier = WebhookVerifier(secret: 'whsec_...');
 
 try {
@@ -260,8 +264,9 @@ dart test
 dart format .
 ```
 
-The `MockTransport` is deterministic given a fixed `seed:` — useful
-for reproducing test failures. Open issues at
+The `MockTransport` (dev-only fixtures, importable from
+`package:puente_railway/testing.dart` since 0.3.0) is deterministic
+given a fixed `seed:` — useful for reproducing test failures. Open issues at
 <https://github.com/Vysion-Software/puente-flutter-sdk/issues>.
 
 ## License

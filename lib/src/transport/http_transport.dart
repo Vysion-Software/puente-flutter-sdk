@@ -15,7 +15,11 @@ import 'puente_transport.dart';
 /// Transport that talks to a real Puente Railway server over HTTPS.
 ///
 /// Adds:
-/// * `Authorization: Bearer <apiKey>` (always, unless empty in mock mode).
+/// * `Authorization: Bearer <token>` — resolved fresh from
+///   [PuenteConfig.tokenProvider] on **every attempt** when configured
+///   (mobile-safe short-lived session tokens), otherwise the static
+///   [PuenteConfig.apiKey] (server-side `sk_` keys only; omitted when
+///   empty in mock mode).
 /// * `Content-Type` + `Accept` (`application/json`).
 /// * `User-Agent` + `X-SDK-Version` (from [PuenteConfig.userAgent]).
 /// * `X-Puente-Merchant-Id` when [PuenteConfig.merchantId] is set.
@@ -51,11 +55,24 @@ class HttpTransport implements PuenteTransport {
   @override
   Future<PuenteResponse> send(PuenteRequest request) async {
     final url = _buildUri(request);
-    final mergedHeaders = _mergeHeaders(request);
 
     var attempt = 0;
     while (true) {
       attempt += 1;
+      // Re-merged per attempt: a tokenProvider mints a fresh short-lived
+      // token for every try, so a retry never replays an expired bearer.
+      // A tokenProvider failure must not escape as a raw exception (the
+      // SDK's contract is that transport errors surface as
+      // TransportException) — wrap and rethrow.
+      final Map<String, String> mergedHeaders;
+      try {
+        mergedHeaders = await _mergeHeaders(request);
+      } catch (e) {
+        // A tokenProvider failure must not escape as a raw exception:
+        // the SDK's contract is that transport-time failures surface as
+        // TransportException so callers only need one catch site.
+        throw TransportException('tokenProvider failed: $e', cause: e);
+      }
       final started = clock.now();
 
       _observer.onRequest(PuenteRequestEvent(
@@ -181,14 +198,20 @@ class HttpTransport implements PuenteTransport {
     return url;
   }
 
-  Map<String, String> _mergeHeaders(PuenteRequest request) {
+  Future<Map<String, String>> _mergeHeaders(PuenteRequest request) async {
     final out = <String, String>{
       'Accept': 'application/json',
       'User-Agent': config.userAgent,
       'X-SDK-Version': packageVersion,
     };
     if (request.body != null) out['Content-Type'] = 'application/json';
-    if (config.apiKey.isNotEmpty) {
+    final tokenProvider = config.tokenProvider;
+    if (tokenProvider != null) {
+      // Mobile-safe path: a fresh user-session token per request. Errors
+      // from the provider propagate to the caller — auth can't be
+      // silently skipped.
+      out['Authorization'] = 'Bearer ${await tokenProvider()}';
+    } else if (config.apiKey.isNotEmpty) {
       out['Authorization'] = 'Bearer ${config.apiKey}';
     }
     if (config.merchantId != null && config.merchantId!.isNotEmpty) {

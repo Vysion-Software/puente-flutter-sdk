@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1.7.2
+        with:
+          sdk: stable
+
+      - name: Install dependencies
+        # --no-example: example/ is a Flutter app and can't resolve on a
+        # pure-Dart CI runner; the SDK itself is pure Dart.
+        run: dart pub get --no-example
+
+      - name: Verify formatting
+        run: dart format --output=none --set-exit-if-changed lib test
+
+      - name: Analyze (infos are fatal)
+        run: dart analyze --fatal-infos lib test
+
+      - name: Run tests
+        run: dart test

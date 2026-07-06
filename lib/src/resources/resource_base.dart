@@ -3,6 +3,7 @@ import 'package:uuid/uuid.dart';
 import '../exceptions/api_exception.dart';
 import '../exceptions/auth_exception.dart';
 import '../exceptions/rate_limit_exception.dart';
+import '../exceptions/stale_quote_exception.dart';
 import '../exceptions/validation_exception.dart';
 import '../transport/puente_request.dart';
 import '../transport/puente_response.dart';
@@ -41,8 +42,25 @@ abstract class ResourceBase {
     final message = (body['message'] as String?) ??
         (body['error'] as String?) ??
         'HTTP ${response.statusCode}';
-    final code = body['error'] as String?;
+    // Backend `error` strings for money-critical rejections are stable
+    // token-prefixed identifiers (`quote_expired`, `quote_already_used`,
+    // `beneficiary_not_registered: …`, `insufficient_funds`, …). Strip
+    // the trailing ": <detail>" so `ApiException.code` is the stable
+    // machine-readable identifier callers can branch on.
+    final rawCode = body['error'] as String?;
+    final code = rawCode == null
+        ? null
+        : (rawCode.contains(':')
+            ? rawCode.substring(0, rawCode.indexOf(':'))
+            : rawCode);
     final requestId = response.requestId;
+
+    // Server-emitted quote_expired 409 maps to the same typed exception
+    // the client-side createFromQuote guard raises — callers catch one
+    // type regardless of which side detected the staleness.
+    if (response.statusCode == 409 && code == 'quote_expired') {
+      return StaleQuoteException(message);
+    }
 
     switch (response.statusCode) {
       case 401:

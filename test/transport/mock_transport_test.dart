@@ -49,9 +49,9 @@ void main() {
       expect(body['destination_currency'], 'MXN');
       expect(body['fx_rate'], '19.73');
       expect(body['total_fee_minor'],
-          MockTransport.crossBorderFlatFeeFixtureMinor);
+          MockTransport.crossBorderFlatFeeUsdFixtureMinor);
       expect(body['total_cost_minor'],
-          10000 + MockTransport.crossBorderFlatFeeFixtureMinor);
+          10000 + MockTransport.crossBorderFlatFeeUsdFixtureMinor);
       expect(body['transfer_type'], 'cross_border');
       expect(body['currency_leg'], 'CETES');
       expect(body['fee_breakdown'], {

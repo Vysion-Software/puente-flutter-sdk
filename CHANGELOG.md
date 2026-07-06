@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.1 — 2026-07-06
+
+**Mock fee fixture: USD-anchored.** `MockTransport`'s cross-border flat
+fee was `100` minor units of *whatever the source currency was*, so an
+MXN-source quote (the region-change corridor) charged $1.00 MXN
+(~US$0.05) instead of the backend's $1.00 USD default policy. The fixture
+is now anchored to $1.00 USD and charged in the source currency at the
+fixture rate: USD source → 100, MXN source → 1 973 (=$19.73 MXN), USDC
+source → 1 000 000 (6-decimal minor units). Wire shape is unchanged —
+fees stay denominated in the source currency per the backend contract.
+
+- `crossBorderFlatFeeFixtureMinor` renamed to
+  `crossBorderFlatFeeUsdFixtureMinor` (dev-only mock surface).
+- New contract tests pin the MXN- and USDC-source fee equivalents.
+
 ## 0.3.0 — 2026-07-05
 
 **Treasury & Profit Management alignment.** The SDK is now a pure typed

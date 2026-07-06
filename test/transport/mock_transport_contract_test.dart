@@ -44,18 +44,45 @@ void main() {
       expect(
         q.fee,
         const Money.fromMinor(
-            MockTransport.crossBorderFlatFeeFixtureMinor, Currency.usd),
+            MockTransport.crossBorderFlatFeeUsdFixtureMinor, Currency.usd),
       );
       expect(q.feeBreakdown, isNotNull);
       expect(q.feeBreakdown!.flatFee.minorUnits,
-          MockTransport.crossBorderFlatFeeFixtureMinor);
+          MockTransport.crossBorderFlatFeeUsdFixtureMinor);
       expect(q.feeBreakdown!.fxSpreadFee.isZero, isTrue);
       expect(q.feeBreakdown!.vendorFee.isZero, isTrue);
       expect(q.feeBreakdown!.totalFee.minorUnits,
-          MockTransport.crossBorderFlatFeeFixtureMinor);
+          MockTransport.crossBorderFlatFeeUsdFixtureMinor);
       expect(q.totalCost, const Money.fromMinor(10100, Currency.usd));
       expect(q.transferType, 'cross_border');
       expect(q.currencyLeg, CurrencyLeg.cetes);
+    });
+
+    test(
+        'MXN-source fee is the \$1.00 USD equivalent at the fixture rate, '
+        'never \$1.00 MXN', () async {
+      // Region-change corridor (MXN wallet -> USD): the backend policy is a
+      // \$1.00 USD flat fee. Charged in the source currency at the 19.73
+      // fixture rate that is 1973 centavos (\$19.73 MXN) — a literal 100
+      // MXN minor units would silently reprice the fee to ~US\$0.05.
+      final q = await client.quotes.create(
+        sourceAmount: const Money.fromMinor(100000, Currency.mxn),
+        targetCurrency: Currency.usd,
+      );
+      expect(q.fee, const Money.fromMinor(1973, Currency.mxn));
+      expect(q.feeBreakdown!.flatFee.minorUnits, 1973);
+      expect(q.totalCost, const Money.fromMinor(101973, Currency.mxn));
+    });
+
+    test('USDC-source fee is \$1.00 USD in 6-decimal minor units', () async {
+      // USDC scales to 6 decimals: \$1.00 = 1_000_000 minor units, not the
+      // raw 100 of the USD fixture constant.
+      final q = await client.quotes.create(
+        sourceAmount: const Money.fromMinor(10000000, Currency.usdc),
+        targetCurrency: Currency.mxn,
+      );
+      expect(q.fee, const Money.fromMinor(1000000, Currency.usdc));
+      expect(q.feeBreakdown!.flatFee.minorUnits, 1000000);
     });
 
     test('transfer created from a quote uses the quote amounts verbatim',

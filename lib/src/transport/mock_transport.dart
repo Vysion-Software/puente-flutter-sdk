@@ -324,7 +324,9 @@ class MockTransport implements PuenteTransport {
         'mock transport has no USD fixture rate for ${source.code}',
       );
     }
-    return (crossBorderFlatFeeUsdFixtureMinor * source.scale * rate ~/
+    return (crossBorderFlatFeeUsdFixtureMinor *
+            source.scale *
+            rate ~/
             Currency.usd.scale)
         .toInt();
   }

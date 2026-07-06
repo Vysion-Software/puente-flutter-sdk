@@ -60,10 +60,15 @@ check() { # check <label> <extra-grep-flags-or-empty> <ERE> [allow-literal...]
   local label="$1" flags="$2" regex="$3" hits allow
   shift 3
   hits=$(scan "$flags" "$regex")
-  if [ "$#" -gt 0 ]; then
+  # Mask allowlisted literals IN PLACE and re-grep the residue — dropping
+  # whole lines would let a real secret hide next to a fixture on the
+  # same line.
+  if [ "$#" -gt 0 ] && [ -n "$hits" ]; then
     for allow in "$@"; do
-      hits=$(printf '%s\n' "$hits" | grep -vF -- "$allow" || true)
+      hits=$(printf '%s\n' "$hits" | sed "s|${allow}|ALLOWLISTED|g")
     done
+    # shellcheck disable=SC2086
+    hits=$(printf '%s\n' "$hits" | grep -EI $flags -- "$regex" || true)
   fi
   hits=$(printf '%s\n' "$hits" | sed '/^$/d')
   if [ -n "$hits" ]; then

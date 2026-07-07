@@ -61,6 +61,22 @@ import 'puente_transport.dart';
 /// * `GET /clabe/:clabe` — returns a plausible bank-name lookup. CLABEs
 ///   ending in `00` are reported as `valid=false` for negative-path
 ///   testing.
+/// * Onboarding/KYC (`/onboarding/*`, `/kyc/*`, `/wallet/readiness`,
+///   `/me/personal-info*`) — mirrors the Puente KYC surface (migration
+///   0012 + `kyc::router`): region policy (US/MX; unsupported countries
+///   come back calm with `supported=false`), profile validation
+///   (underage → 422 `underage`, region-mismatched identifiers/documents
+///   → 422, approved profiles → 409 `profile_locked`), versioned
+///   consents, one-active-session semantics (`duplicate=true`), the mock
+///   verification lifecycle driven by `POST /kyc/sessions/:id/mock-events`
+///   (scenarios `document_captured | selfie_captured | processing |
+///   approve | reject | manual_review | expire | error`; terminal → 409
+///   `terminal_state`), backend-authoritative wallet readiness, and a
+///   masked personal-info view (identifiers as type+last4, raw values
+///   never echoed). Single-applicant semantics: the most recently created
+///   applicant is "the" authenticated user; re-creating the same
+///   `external_user_id` rotates the token (restart recovery). The mock
+///   NEVER approves on its own — outcomes only move via mock-events.
 /// * Idempotency: requests with the same `Idempotency-Key` on `POST`
 ///   return the same stored response.
 ///
@@ -96,6 +112,13 @@ class MockTransport implements PuenteTransport {
   final Map<String, Map<String, dynamic>> _quotes = {};
   final Map<String, Map<String, dynamic>> _transfers = {};
   final Map<String, Map<String, dynamic>> _accounts = {};
+  final Map<String, Map<String, dynamic>> _applicants = {};
+  final Map<String, String> _applicantIdByExternalId = {};
+  final Map<String, Map<String, dynamic>> _kycSessions = {};
+
+  /// The applicant the mock treats as "the authenticated user" — the most
+  /// recently created one (single-applicant semantics; see class doc).
+  String? _currentApplicantId;
 
   // Idempotency map: idempotency-key → already-returned response body.
   final Map<String, _CachedResponse> _idempotencyCache = {};
@@ -207,6 +230,41 @@ class MockTransport implements PuenteTransport {
     final clabeMatch = RegExp(r'^/clabe/([0-9]+)$').firstMatch(path);
     if (clabeMatch != null && method == 'GET') {
       return _lookupClabe(clabeMatch.group(1)!);
+    }
+
+    // Onboarding / KYC surface (mirrors Puente kyc::router).
+    if (method == 'POST' && path == '/onboarding/applicants') {
+      return _createApplicant(request);
+    }
+    if (method == 'GET' && path == '/onboarding/policy') {
+      return _getPolicy(request);
+    }
+    if (path == '/onboarding/profile') {
+      if (method == 'GET') return _getOnboardingProfile();
+      if (method == 'PUT') return _updateOnboardingProfile(request);
+    }
+    if (method == 'POST' && path == '/onboarding/consents') {
+      return _submitConsents(request);
+    }
+    if (method == 'POST' && path == '/kyc/sessions') {
+      return _createKycSession();
+    }
+    if (method == 'GET' && path == '/kyc/sessions/current') {
+      return _currentKycSession();
+    }
+    final mockEventMatch =
+        RegExp(r'^/kyc/sessions/([^/]+)/mock-events$').firstMatch(path);
+    if (mockEventMatch != null && method == 'POST') {
+      return _kycMockEvent(mockEventMatch.group(1)!, request);
+    }
+    if (method == 'GET' && path == '/wallet/readiness') {
+      return _walletReadiness();
+    }
+    if (method == 'GET' && path == '/me/personal-info') {
+      return _personalInfo();
+    }
+    if (method == 'POST' && path == '/me/personal-info/correction-requests') {
+      return _correctionRequest(request);
     }
 
     return _jsonResponse(404, {
@@ -591,6 +649,825 @@ class MockTransport implements PuenteTransport {
     });
   }
 
+  // -------------------------------------------------- onboarding / kyc ----
+  //
+  // Fixture policy: mirrors the Puente backend DEFAULTS (kyc::policy
+  // POLICY_VERSION 2026-07-07.1) — same error codes, same wire shapes,
+  // same state machine. The mock never approves on its own; outcomes are
+  // driven exclusively through /kyc/sessions/:id/mock-events, exactly like
+  // the VENDOR_MODE=mock backend.
+
+  /// Mirrors `kyc::policy::POLICY_VERSION`.
+  static const String kycPolicyVersion = '2026-07-07.1';
+
+  /// Mirrors `kyc::policy::DISCLOSURE_VERSION`.
+  static const String kycDisclosureVersion = '2026-07-07.1';
+
+  static const List<String> _activeSessionStatuses = <String>[
+    'session_created',
+    'document_capture_started',
+    'selfie_started',
+    'processing',
+  ];
+
+  static const List<String> _lockedKycStatuses = <String>[
+    'processing',
+    'approved',
+    'manual_review',
+  ];
+
+  Map<String, dynamic> _policyFixture(String residence) {
+    final upper = residence.toUpperCase();
+    final base = <String, dynamic>{
+      'policy_version': kycPolicyVersion,
+      'residence_country': upper,
+      'min_age': 18,
+      'disclosure_version': kycDisclosureVersion,
+      'intended_use_options': <Map<String, dynamic>>[
+        {'id': 'family_support', 'manual_review': false},
+        {'id': 'personal_expenses', 'manual_review': false},
+        {'id': 'education', 'manual_review': false},
+        {'id': 'medical', 'manual_review': false},
+        {'id': 'business', 'manual_review': true},
+        {'id': 'other', 'manual_review': false},
+      ],
+      'source_of_funds_options': <String>[
+        'employment',
+        'savings',
+        'business_income',
+        'family_gift',
+        'government_benefits',
+        'other',
+      ],
+      'expected_volume_bands': <Map<String, dynamic>>[
+        {'id': 'under_500', 'manual_review': false},
+        {'id': '500_2000', 'manual_review': false},
+        {'id': '2000_10000', 'manual_review': false},
+        {'id': 'over_10000', 'manual_review': true},
+      ],
+    };
+    switch (upper) {
+      case 'US':
+        return <String, dynamic>{
+          ...base,
+          'supported': true,
+          'region': 'us',
+          'corridors': <String>['us_mx'],
+          'document_options': <Map<String, dynamic>>[
+            {
+              'document_type': 'us_drivers_license',
+              'issuing_countries': ['US'],
+              'legal_review_status': 'approved_policy',
+              'manual_review_required': false,
+            },
+            {
+              'document_type': 'us_state_id',
+              'issuing_countries': ['US'],
+              'legal_review_status': 'approved_policy',
+              'manual_review_required': false,
+            },
+            {
+              'document_type': 'us_passport',
+              'issuing_countries': ['US'],
+              'legal_review_status': 'approved_policy',
+              'manual_review_required': false,
+            },
+            {
+              'document_type': 'mexican_passport',
+              'issuing_countries': ['MX'],
+              'legal_review_status': 'requires_legal_review',
+              'manual_review_required': true,
+            },
+            {
+              'document_type': 'foreign_passport',
+              'issuing_countries': <String>[],
+              'legal_review_status': 'requires_legal_review',
+              'manual_review_required': true,
+            },
+            {
+              'document_type': 'consular_id',
+              'issuing_countries': ['MX'],
+              'legal_review_status': 'mock_only',
+              'manual_review_required': true,
+            },
+          ],
+          'identifier_requirements': <Map<String, dynamic>>[
+            {
+              'identifier_type': 'ssn',
+              'requirement': 'required_one_of',
+              'reason_key': 'kycWhyTaxId',
+              'legal_review_status': 'approved_policy',
+            },
+            {
+              'identifier_type': 'itin',
+              'requirement': 'required_one_of',
+              'reason_key': 'kycWhyTaxId',
+              'legal_review_status': 'requires_legal_review',
+            },
+          ],
+          'disclosures': <Map<String, dynamic>>[
+            _disclosure('terms_of_service', '/legal/terms'),
+            _disclosure('privacy_policy', '/legal/privacy'),
+            _disclosure('esign_consent', '/legal/esign'),
+            _disclosure('remittance_terms', '/legal/remittance-terms'),
+          ],
+        };
+      case 'MX':
+        return <String, dynamic>{
+          ...base,
+          'supported': true,
+          'region': 'mx',
+          'corridors': <String>['mx_us', 'us_mx'],
+          'document_options': <Map<String, dynamic>>[
+            {
+              'document_type': 'ine',
+              'issuing_countries': ['MX'],
+              'legal_review_status': 'approved_policy',
+              'manual_review_required': false,
+            },
+            {
+              'document_type': 'mexican_passport',
+              'issuing_countries': ['MX'],
+              'legal_review_status': 'approved_policy',
+              'manual_review_required': false,
+            },
+          ],
+          'identifier_requirements': <Map<String, dynamic>>[
+            {
+              'identifier_type': 'curp',
+              'requirement': 'optional',
+              'reason_key': 'kycWhyCurp',
+              'legal_review_status': 'requires_legal_review',
+            },
+          ],
+          'disclosures': <Map<String, dynamic>>[
+            _disclosure('terms_of_service', '/legal/terms'),
+            _disclosure('aviso_de_privacidad', '/legal/aviso-de-privacidad'),
+          ],
+        };
+      default:
+        return <String, dynamic>{
+          ...base,
+          'supported': false,
+          'unsupported_reason': 'region_not_supported',
+          'corridors': <String>[],
+          'document_options': <Map<String, dynamic>>[],
+          'identifier_requirements': <Map<String, dynamic>>[],
+          'disclosures': <Map<String, dynamic>>[],
+          'intended_use_options': <Map<String, dynamic>>[],
+          'source_of_funds_options': <String>[],
+          'expected_volume_bands': <Map<String, dynamic>>[],
+        };
+    }
+  }
+
+  static Map<String, dynamic> _disclosure(String id, String url) =>
+      <String, dynamic>{
+        'id': id,
+        'version': kycDisclosureVersion,
+        'required': true,
+        'url_placeholder': url,
+      };
+
+  Map<String, dynamic> _requireApplicant() {
+    final id = _currentApplicantId;
+    final doc = id == null ? null : _applicants[id];
+    if (doc == null) {
+      throw const _MockError(
+          401, 'applicant_auth_required', 'applicant auth required');
+    }
+    return doc;
+  }
+
+  PuenteResponse _createApplicant(PuenteRequest request) {
+    final body = _decodeBody(request);
+    final externalUserId = (body['external_user_id'] as String?)?.trim();
+    if (externalUserId == null || externalUserId.isEmpty) {
+      throw const _MockError(
+          422, 'invalid_request', 'external_user_id must not be empty');
+    }
+    final phone = body['phone'] as String?;
+    final email = body['email'] as String?;
+    if (phone == null && email == null) {
+      throw const _MockError(422, 'contact_required', 'provide phone or email');
+    }
+
+    final existingId = _applicantIdByExternalId[externalUserId];
+    final token = 'pat_mock_${_uuid.v4().replaceAll('-', '')}'.substring(0, 40);
+    final now = clock.now().toUtc().toIso8601String();
+    if (existingId != null) {
+      // Token rotation — the restart-recovery path, mirroring the backend
+      // ON CONFLICT upsert.
+      final doc = _applicants[existingId]!;
+      doc['applicant_token'] = token;
+      doc['phone'] = phone ?? doc['phone'];
+      doc['email'] = email ?? doc['email'];
+      doc['updated_at'] = now;
+      _currentApplicantId = existingId;
+      return _jsonResponse(201, <String, dynamic>{
+        'applicant_id': existingId,
+        'applicant_token': token,
+        'kyc_status': doc['kyc_status'],
+        'kyc_tier': doc['kyc_tier'],
+        'created': false,
+      });
+    }
+
+    final id = 'apl_${_uuid.v4().replaceAll('-', '').substring(0, 16)}';
+    _applicants[id] = <String, dynamic>{
+      'id': id,
+      'external_user_id': externalUserId,
+      'applicant_token': token,
+      'phone': phone,
+      'email': email,
+      'kyc_status': 'not_started',
+      'kyc_tier': 'none',
+      'requires_manual_review': false,
+      'manual_review_reason': null,
+      'profile': <String, dynamic>{},
+      'sensitive_identifier': null, // {'type','last4'} — raw NEVER stored
+      'document': null,
+      'policy_version': null,
+      'disclosure_version': null,
+      'consent_at': null,
+      'created_at': now,
+      'updated_at': now,
+    };
+    _applicantIdByExternalId[externalUserId] = id;
+    _currentApplicantId = id;
+    return _jsonResponse(201, <String, dynamic>{
+      'applicant_id': id,
+      'applicant_token': token,
+      'kyc_status': 'not_started',
+      'kyc_tier': 'none',
+      'created': true,
+    });
+  }
+
+  PuenteResponse _getPolicy(PuenteRequest request) {
+    var residence = request.query['residence_country'];
+    if (residence == null) {
+      final doc = _requireApplicant();
+      residence = (doc['profile'] as Map<String, dynamic>)['residence_country']
+          as String?;
+      if (residence == null) {
+        throw const _MockError(422, 'residence_country_required',
+            'pass ?residence_country= or set it on the profile');
+      }
+    }
+    if (residence.length != 2) {
+      throw const _MockError(
+          422, 'invalid_request', 'country must be a 2-letter ISO code');
+    }
+    return _jsonResponse(200, _policyFixture(residence));
+  }
+
+  PuenteResponse _updateOnboardingProfile(PuenteRequest request) {
+    final doc = _requireApplicant();
+    if (_lockedKycStatuses.contains(doc['kyc_status'] as String)) {
+      throw const _MockError(409, 'profile_locked',
+          'identity fields need review to change — submit a correction request');
+    }
+
+    final body = _decodeBody(request);
+    const allowed = <String>{
+      'legal_first_name', 'legal_middle_name', 'legal_last_name',
+      'date_of_birth', 'address_line1', 'address_line2', 'address_city',
+      'address_state', 'address_postal_code', 'address_country',
+      'residence_country', 'region', 'transfer_corridor', 'intended_use',
+      'source_of_funds', 'expected_volume_band', 'sensitive_identifier',
+      'document', //
+    };
+    for (final key in body.keys) {
+      if (!allowed.contains(key)) {
+        // deny_unknown_fields — kyc_status/kyc_tier can't be smuggled in.
+        throw _MockError(422, 'invalid_request', 'unknown field: $key');
+      }
+    }
+    if (body.isEmpty) {
+      throw const _MockError(422, 'empty_update', 'empty_update');
+    }
+
+    final profile = doc['profile'] as Map<String, dynamic>;
+    final residence = (body['residence_country'] as String?)?.toUpperCase() ??
+        profile['residence_country'] as String?;
+    final needsPolicy = body.keys.any((k) => k != 'legal_middle_name');
+    Map<String, dynamic>? policy;
+    if (needsPolicy && residence != null) {
+      policy = _policyFixture(residence);
+      if (policy['supported'] != true) {
+        throw const _MockError(422, 'region_not_supported',
+            'Pesito is not available for this residence country yet');
+      }
+    }
+
+    final reviewReasons = <String>[];
+
+    if (body['date_of_birth'] is String) {
+      final dob = DateTime.tryParse(body['date_of_birth'] as String);
+      if (dob == null) {
+        throw const _MockError(422, 'invalid_dob', 'expected YYYY-MM-DD');
+      }
+      final today = clock.now().toUtc();
+      if (dob.isAfter(today)) {
+        throw const _MockError(422, 'invalid_dob', 'invalid_dob');
+      }
+      var years = today.year - dob.year;
+      if (today.month < dob.month ||
+          (today.month == dob.month && today.day < dob.day)) {
+        years -= 1;
+      }
+      if (years > 120) {
+        throw const _MockError(422, 'invalid_dob', 'invalid_dob');
+      }
+      if (years < 18) {
+        throw const _MockError(422, 'underage',
+            'applicants must meet the minimum age for this region');
+      }
+    }
+
+    if (body['region'] is String) {
+      final expected = policy?['region'];
+      if (expected == null || body['region'] != expected) {
+        throw const _MockError(422, 'unsupported_region_combination',
+            'region must match residence country');
+      }
+    }
+    if (body['transfer_corridor'] is String) {
+      final corridors =
+          (policy?['corridors'] as List<dynamic>? ?? const <dynamic>[])
+              .cast<String>();
+      if (!corridors.contains(body['transfer_corridor'])) {
+        throw const _MockError(422, 'invalid_corridor', 'invalid_corridor');
+      }
+    }
+    void checkChoice(String field, String listKey) {
+      final raw = body[field];
+      if (raw is! String) return;
+      final options = (policy?[listKey] as List<dynamic>? ?? const <dynamic>[])
+          .cast<Map<String, dynamic>>();
+      final match = options.where((o) => o['id'] == raw).toList();
+      if (match.isEmpty) {
+        throw _MockError(422, 'invalid_choice', 'invalid_choice: $field');
+      }
+      if (match.first['manual_review'] == true) {
+        reviewReasons.add('${field}_review');
+      }
+    }
+
+    checkChoice('intended_use', 'intended_use_options');
+    checkChoice('expected_volume_band', 'expected_volume_bands');
+    if (body['source_of_funds'] is String) {
+      final options = (policy?['source_of_funds_options'] as List<dynamic>? ??
+              const <dynamic>[])
+          .cast<String>();
+      if (!options.contains(body['source_of_funds'])) {
+        throw const _MockError(
+            422, 'invalid_choice', 'invalid_choice: source_of_funds');
+      }
+    }
+
+    Map<String, dynamic>? maskedIdentifier;
+    if (body['sensitive_identifier'] is Map) {
+      final input =
+          (body['sensitive_identifier'] as Map).cast<String, dynamic>();
+      final type = input['type'] as String?;
+      final value =
+          (input['value'] as String?)?.replaceAll(RegExp(r'[\s-]'), '') ?? '';
+      final requirements =
+          (policy?['identifier_requirements'] as List<dynamic>? ??
+                  const <dynamic>[])
+              .cast<Map<String, dynamic>>();
+      final req =
+          requirements.where((r) => r['identifier_type'] == type).toList();
+      if (req.isEmpty) {
+        throw const _MockError(422, 'identifier_not_allowed',
+            'this identifier is not collected for your region');
+      }
+      if (value.length < 4) {
+        throw const _MockError(
+            422, 'invalid_identifier_value', 'invalid_identifier_value');
+      }
+      if (req.first['legal_review_status'] == 'requires_legal_review') {
+        reviewReasons.add('identifier_review');
+      }
+      // Raw value discarded here — only type + last4 are ever stored,
+      // mirroring the backend's hash+last4 contract.
+      maskedIdentifier = <String, dynamic>{
+        'type': type,
+        'last4': value.substring(value.length - 4),
+      };
+    }
+
+    Map<String, dynamic>? document;
+    if (body['document'] is Map) {
+      final input = (body['document'] as Map).cast<String, dynamic>();
+      final type = input['type'] as String?;
+      final issuing = (input['issuing_country'] as String?)?.toUpperCase();
+      final options =
+          (policy?['document_options'] as List<dynamic>? ?? const <dynamic>[])
+              .cast<Map<String, dynamic>>();
+      final match = options.where((o) {
+        if (o['document_type'] != type) return false;
+        final countries =
+            (o['issuing_countries'] as List<dynamic>).cast<String>();
+        return countries.isEmpty || countries.contains(issuing);
+      }).toList();
+      if (match.isEmpty) {
+        throw const _MockError(422, 'document_not_supported',
+            'not an accepted ID for your region yet');
+      }
+      if (match.first['manual_review_required'] == true) {
+        reviewReasons.add('document_review');
+      }
+      document = <String, dynamic>{'type': type, 'issuing_country': issuing};
+    }
+
+    // All validation passed — apply.
+    for (final key in const <String>[
+      'legal_first_name', 'legal_middle_name', 'legal_last_name',
+      'date_of_birth', 'address_line1', 'address_line2', 'address_city',
+      'address_state', 'address_postal_code', 'address_country',
+      'transfer_corridor', 'intended_use', 'source_of_funds',
+      'expected_volume_band', //
+    ]) {
+      if (body[key] is String) profile[key] = body[key];
+    }
+    if (residence != null && needsPolicy) {
+      profile['residence_country'] = residence;
+      profile['region'] = policy?['region'];
+      doc['policy_version'] = kycPolicyVersion;
+    }
+    if (maskedIdentifier != null) {
+      doc['sensitive_identifier'] = maskedIdentifier;
+    }
+    if (document != null) doc['document'] = document;
+    if (reviewReasons.isNotEmpty) {
+      doc['requires_manual_review'] = true;
+      doc['manual_review_reason'] = reviewReasons.join(',');
+    }
+    if (doc['kyc_status'] == 'not_started') {
+      doc['kyc_status'] = 'in_progress';
+    }
+    doc['updated_at'] = clock.now().toUtc().toIso8601String();
+    return _jsonResponse(200, _profileView(doc));
+  }
+
+  PuenteResponse _getOnboardingProfile() =>
+      _jsonResponse(200, _profileView(_requireApplicant()));
+
+  List<String> _profileMissing(Map<String, dynamic> doc) {
+    final profile = doc['profile'] as Map<String, dynamic>;
+    final missing = <String>[];
+    for (final field in const <String>[
+      'legal_first_name', 'legal_last_name', 'date_of_birth',
+      'address_line1', 'address_city', 'address_postal_code',
+      'address_country', 'residence_country', 'region', 'transfer_corridor',
+      'intended_use', 'source_of_funds', 'expected_volume_band', //
+    ]) {
+      if (profile[field] == null) missing.add(field);
+    }
+    if (doc['document'] == null) missing.add('document');
+    final residence = profile['residence_country'] as String?;
+    if (residence != null) {
+      final policy = _policyFixture(residence);
+      final requirements = (policy['identifier_requirements'] as List<dynamic>)
+          .cast<Map<String, dynamic>>();
+      final oneOf = requirements
+          .where((r) => r['requirement'] == 'required_one_of')
+          .map((r) => r['identifier_type'])
+          .toList();
+      final provided =
+          (doc['sensitive_identifier'] as Map<String, dynamic>?)?['type'];
+      if (oneOf.isNotEmpty && !oneOf.contains(provided)) {
+        missing.add('sensitive_identifier');
+      }
+    }
+    return missing;
+  }
+
+  bool _consentCurrent(Map<String, dynamic> doc) =>
+      doc['consent_at'] != null &&
+      doc['disclosure_version'] == kycDisclosureVersion;
+
+  Map<String, dynamic> _profileView(Map<String, dynamic> doc) {
+    final profile = doc['profile'] as Map<String, dynamic>;
+    final missing = _profileMissing(doc);
+    final locked = _lockedKycStatuses.contains(doc['kyc_status'] as String);
+    return <String, dynamic>{
+      'applicant_id': doc['id'],
+      'external_user_id': doc['external_user_id'],
+      'kyc_status': doc['kyc_status'],
+      'kyc_tier': doc['kyc_tier'],
+      'requires_manual_review': doc['requires_manual_review'],
+      'contact': <String, dynamic>{
+        'phone': doc['phone'],
+        'email': doc['email'],
+      },
+      'profile': <String, dynamic>{
+        'legal_first_name': profile['legal_first_name'],
+        'legal_middle_name': profile['legal_middle_name'],
+        'legal_last_name': profile['legal_last_name'],
+        'date_of_birth': profile['date_of_birth'],
+        'address': <String, dynamic>{
+          'line1': profile['address_line1'],
+          'line2': profile['address_line2'],
+          'city': profile['address_city'],
+          'state': profile['address_state'],
+          'postal_code': profile['address_postal_code'],
+          'country': profile['address_country'],
+        },
+        'residence_country': profile['residence_country'],
+        'region': profile['region'],
+        'transfer_corridor': profile['transfer_corridor'],
+        'intended_use': profile['intended_use'],
+        'source_of_funds': profile['source_of_funds'],
+        'expected_volume_band': profile['expected_volume_band'],
+      },
+      if (doc['sensitive_identifier'] != null)
+        'sensitive_identifier': doc['sensitive_identifier'],
+      if (doc['document'] != null) 'document': doc['document'],
+      'consent': <String, dynamic>{
+        'disclosure_version': doc['disclosure_version'],
+        'consent_at': doc['consent_at'],
+        'current': _consentCurrent(doc),
+      },
+      'policy_version': doc['policy_version'],
+      'field_editability': locked ? 'review_required' : 'editable',
+      'complete': missing.isEmpty,
+      'missing': missing,
+      'updated_at': doc['updated_at'],
+    };
+  }
+
+  PuenteResponse _submitConsents(PuenteRequest request) {
+    final body = _decodeBody(request);
+    final version = body['disclosure_version'] as String?;
+    if (version != kycDisclosureVersion) {
+      throw const _MockError(409, 'stale_disclosure_version',
+          'refresh the policy and re-present disclosures');
+    }
+    final doc = _requireApplicant();
+    final residence = (doc['profile']
+        as Map<String, dynamic>)['residence_country'] as String?;
+    if (residence == null) {
+      throw const _MockError(422, 'residence_country_required',
+          'set the profile region before consenting');
+    }
+    final accepted = (body['accepted'] as List<dynamic>? ?? const <dynamic>[])
+        .cast<String>();
+    final required = (_policyFixture(residence)['disclosures'] as List<dynamic>)
+        .cast<Map<String, dynamic>>()
+        .where((d) => d['required'] == true)
+        .map((d) => d['id'] as String);
+    final missing = required.where((id) => !accepted.contains(id)).toList();
+    if (missing.isNotEmpty) {
+      throw _MockError(422, 'consent_incomplete',
+          'consent_incomplete: missing ${missing.join(",")}');
+    }
+    doc['disclosure_version'] = version;
+    doc['consent_at'] = clock.now().toUtc().toIso8601String();
+    doc['updated_at'] = doc['consent_at'];
+    return _jsonResponse(200, <String, dynamic>{
+      'disclosure_version': version,
+      'consent_captured': true,
+    });
+  }
+
+  Map<String, dynamic>? _activeSessionFor(String applicantId) {
+    for (final s in _kycSessions.values) {
+      if (s['applicant_id'] == applicantId &&
+          _activeSessionStatuses.contains(s['status'] as String)) {
+        return s;
+      }
+    }
+    return null;
+  }
+
+  Map<String, dynamic> _sessionResponse(
+    Map<String, dynamic> session,
+    String kycStatus, {
+    required bool duplicate,
+    String? clientToken,
+  }) =>
+      <String, dynamic>{
+        'session_id': session['id'],
+        'provider': session['provider'],
+        'provider_session_ref': session['provider_session_ref'],
+        'status': session['status'],
+        'failure_reason': session['failure_reason'],
+        'kyc_status': kycStatus,
+        'expires_at': session['expires_at'],
+        'duplicate': duplicate,
+        if (clientToken != null) 'client_token': clientToken,
+      };
+
+  PuenteResponse _createKycSession() {
+    final doc = _requireApplicant();
+    final status = doc['kyc_status'] as String;
+    if (status == 'approved') {
+      throw const _MockError(409, 'already_approved', 'already_approved');
+    }
+    if (status == 'manual_review') {
+      throw const _MockError(409, 'manual_review_pending',
+          'verification is being reviewed — no new session needed');
+    }
+    final missing = _profileMissing(doc);
+    if (missing.isNotEmpty) {
+      throw _MockError(422, 'profile_incomplete',
+          'profile_incomplete: missing ${missing.join(",")}');
+    }
+    if (!_consentCurrent(doc)) {
+      throw const _MockError(
+          422, 'consent_required', 'accept the current disclosures first');
+    }
+    final existing = _activeSessionFor(doc['id'] as String);
+    if (existing != null) {
+      return _jsonResponse(
+          200, _sessionResponse(existing, status, duplicate: true));
+    }
+    final id = 'ksn_${_uuid.v4().replaceAll('-', '').substring(0, 16)}';
+    final ref = _uuid.v4().replaceAll('-', '').substring(0, 24);
+    final now = clock.now().toUtc();
+    final session = <String, dynamic>{
+      'id': id,
+      'applicant_id': doc['id'],
+      'provider': 'mock',
+      'provider_session_ref': ref,
+      'status': 'session_created',
+      'failure_reason': null,
+      'expires_at': now.add(const Duration(minutes: 30)).toIso8601String(),
+      'created_at': now.toIso8601String(),
+    };
+    _kycSessions[id] = session;
+    doc['kyc_status'] = 'in_progress';
+    return _jsonResponse(
+      201,
+      _sessionResponse(
+        session,
+        'in_progress',
+        duplicate: false,
+        clientToken: 'mock_session_token_$ref',
+      ),
+    );
+  }
+
+  PuenteResponse _currentKycSession() {
+    final doc = _requireApplicant();
+    Map<String, dynamic>? latest;
+    for (final s in _kycSessions.values) {
+      if (s['applicant_id'] != doc['id']) continue;
+      if (latest == null ||
+          (s['created_at'] as String)
+                  .compareTo(latest['created_at'] as String) >
+              0) {
+        latest = s;
+      }
+    }
+    if (latest == null) {
+      throw const _MockError(404, 'no_session', 'no_session');
+    }
+    // Lazy expiry, mirroring the backend.
+    if (_activeSessionStatuses.contains(latest['status'] as String) &&
+        DateTime.parse(latest['expires_at'] as String)
+            .isBefore(clock.now().toUtc())) {
+      latest['status'] = 'expired';
+      if (doc['kyc_status'] == 'in_progress' ||
+          doc['kyc_status'] == 'processing') {
+        doc['kyc_status'] = 'expired';
+      }
+    }
+    return _jsonResponse(
+        200,
+        _sessionResponse(latest, doc['kyc_status'] as String,
+            duplicate: false));
+  }
+
+  PuenteResponse _kycMockEvent(String sessionId, PuenteRequest request) {
+    final doc = _requireApplicant();
+    final session = _kycSessions[sessionId];
+    if (session == null || session['applicant_id'] != doc['id']) {
+      throw const _MockError(404, 'not_found', 'session not found');
+    }
+    final body = _decodeBody(request);
+    final scenario = body['scenario'] as String?;
+    const transitions = <String, String>{
+      'document_captured': 'document_capture_started',
+      'selfie_captured': 'selfie_started',
+      'processing': 'processing',
+      'approve': 'approved',
+      'reject': 'rejected',
+      'manual_review': 'manual_review',
+      'expire': 'expired',
+      'error': 'error',
+    };
+    final next = transitions[scenario];
+    if (next == null) {
+      throw const _MockError(422, 'unknown_scenario', 'unknown_scenario');
+    }
+    if (!_activeSessionStatuses.contains(session['status'] as String)) {
+      throw const _MockError(409, 'terminal_state',
+          'session already finished — create a new session to retry');
+    }
+    session['status'] = next;
+    if (next == 'rejected') {
+      session['failure_reason'] = body['reason'] as String? ?? 'mock_rejected';
+    } else if (next == 'error') {
+      session['failure_reason'] =
+          body['reason'] as String? ?? 'mock_provider_error';
+    }
+
+    // Applicant-level consequence — identical to the backend's
+    // applicant_status_after: policy-flagged paths NEVER auto-approve.
+    final requiresReview = doc['requires_manual_review'] == true;
+    String kycStatus;
+    var tier = 'none';
+    switch (next) {
+      case 'approved':
+        if (requiresReview) {
+          kycStatus = 'manual_review';
+        } else {
+          kycStatus = 'approved';
+          tier = 'tier1';
+        }
+      case 'rejected':
+        kycStatus = 'rejected';
+      case 'manual_review':
+        kycStatus = 'manual_review';
+      case 'expired':
+        kycStatus = 'expired';
+      case 'processing':
+        kycStatus = 'processing';
+      default:
+        kycStatus = 'in_progress';
+    }
+    doc['kyc_status'] = kycStatus;
+    doc['kyc_tier'] = tier;
+    doc['updated_at'] = clock.now().toUtc().toIso8601String();
+
+    return _jsonResponse(200, <String, dynamic>{
+      'session_id': session['id'],
+      'status': next,
+      'kyc_status': kycStatus,
+    });
+  }
+
+  PuenteResponse _walletReadiness() {
+    final doc = _requireApplicant();
+    final missing = <String>[];
+    if (_profileMissing(doc).isNotEmpty) missing.add('profile_incomplete');
+    if (!_consentCurrent(doc)) missing.add('consent_required');
+    if (doc['kyc_status'] != 'approved') missing.add('kyc_not_approved');
+    return _jsonResponse(200, <String, dynamic>{
+      'ready': missing.isEmpty,
+      'kyc_status': doc['kyc_status'],
+      'kyc_tier': doc['kyc_tier'],
+      'missing': missing,
+    });
+  }
+
+  PuenteResponse _personalInfo() {
+    final doc = _requireApplicant();
+    Map<String, dynamic>? latest;
+    for (final s in _kycSessions.values) {
+      if (s['applicant_id'] != doc['id']) continue;
+      if (latest == null ||
+          (s['created_at'] as String)
+                  .compareTo(latest['created_at'] as String) >
+              0) {
+        latest = s;
+      }
+    }
+    final view = _profileView(doc);
+    view['verification'] = latest == null
+        ? null
+        : <String, dynamic>{
+            'status': latest['status'],
+            'provider': latest['provider'],
+            'failure_reason': latest['failure_reason'],
+          };
+    view['manual_review'] = <String, dynamic>{
+      'required': doc['requires_manual_review'],
+      'pending': doc['kyc_status'] == 'manual_review',
+    };
+    return _jsonResponse(200, view);
+  }
+
+  PuenteResponse _correctionRequest(PuenteRequest request) {
+    _requireApplicant();
+    final body = _decodeBody(request);
+    const correctable = <String>{
+      'legal_name', 'date_of_birth', 'address', 'phone', 'email',
+      'document', 'sensitive_identifier', 'residence_country', 'other', //
+    };
+    final field = body['field'] as String?;
+    if (field == null || !correctable.contains(field)) {
+      throw const _MockError(422, 'invalid_field', 'invalid_field');
+    }
+    final id = 'cor_${_uuid.v4().replaceAll('-', '').substring(0, 16)}';
+    return _jsonResponse(201, <String, dynamic>{'id': id, 'status': 'pending'});
+  }
+
   // ------------------------------------------------------------- internals
   PuenteResponse _jsonResponse(int status, Object body) {
     final encoded = jsonEncode(body);
@@ -633,6 +1510,10 @@ class MockTransport implements PuenteTransport {
     _accounts.clear();
     _idempotencyCache.clear();
     _consumedQuotes.clear();
+    _applicants.clear();
+    _applicantIdByExternalId.clear();
+    _kycSessions.clear();
+    _currentApplicantId = null;
   }
 }
 

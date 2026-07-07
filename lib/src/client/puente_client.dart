@@ -3,6 +3,9 @@ import 'package:http/http.dart' as http;
 import '../observability/puente_observer.dart';
 import '../resources/accounts_resource.dart';
 import '../resources/clabe_resource.dart';
+import '../resources/kyc_resource.dart';
+import '../resources/onboarding_resource.dart';
+import '../resources/personal_info_resource.dart';
 import '../resources/quotes_resource.dart';
 import '../resources/transfers_resource.dart';
 import '../transport/http_transport.dart';
@@ -110,6 +113,9 @@ class PuenteClient {
         transfers = TransfersResource(transport),
         accounts = AccountsResource(transport),
         clabe = ClabeResource(transport),
+        onboarding = OnboardingResource(transport),
+        kyc = KycResource(transport),
+        personalInfo = PersonalInfoResource(transport),
         remittance = PuenteRemittance(
           quotes: QuotesResource(transport),
           transfers: TransfersResource(transport),
@@ -145,6 +151,17 @@ class PuenteClient {
 
   /// CLABE lookup.
   final ClabeResource clabe;
+
+  /// Onboarding: applicant creation, region policy, profile, consents.
+  /// Applicant-scoped calls authenticate with the `pat_…` token via
+  /// `PuenteConfig.tokenProvider` (see [OnboardingResource] docs).
+  final OnboardingResource onboarding;
+
+  /// Identity-verification sessions + the wallet-readiness gate.
+  final KycResource kyc;
+
+  /// Masked, region-aware Personal Information view.
+  final PersonalInfoResource personalInfo;
 
   /// High-level `quote → send → watch` facade. Most apps should use
   /// this; the lower-level [quotes] / [transfers] are available for

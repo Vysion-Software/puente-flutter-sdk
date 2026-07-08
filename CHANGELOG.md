@@ -1,5 +1,75 @@
 # Changelog
 
+## 0.4.0 — 2026-07-07
+
+**Onboarding / KYC / Personal Information client.** Typed surface for the
+Puente end-user KYC domain (backend migration 0012 + `kyc::router`,
+`feature/puente-kyc-incode-scaffold`). The backend stays the sole KYC
+authority — nothing in this SDK can set `kyc_status`/`kyc_tier`; clients
+submit data and render backend state.
+
+### New resources
+
+- `client.onboarding` (`OnboardingResource`) — `createApplicant`
+  (merchant-credential bootstrap; returns the one-time `pat_…` applicant
+  bearer token), `getPolicy` (region-aware policy: allowed documents,
+  identifier requirements incl. the US SSN/ITIN one-of group, versioned
+  disclosures, manual-review flags, `requires_legal_review`/`mock_only`
+  labels), `getProfile`, `updateProfile` (server-validated partial
+  update), `submitConsents` (versioned; stale versions 409).
+- `client.kyc` (`KycResource`) — `createSession` (duplicate-safe: an
+  in-flight session is returned with `duplicate=true`), `currentSession`,
+  `walletReadiness` (the ONLY wallet gate), and the dev-only
+  `sendMockEvent` (drives the VENDOR_MODE=mock lifecycle; the route does
+  not exist on live backends).
+- `client.personalInfo` (`PersonalInfoResource`) — masked, region-aware
+  Personal Information view + review-routed `requestCorrection`.
+
+### New models
+
+`ApplicantCredentials`, `RegionPolicy` (+`PolicyDocumentOption`,
+`PolicyIdentifierRequirement`, `PolicyDisclosure`, `PolicyChoiceOption`,
+`LegalReviewStatus`, `IdentifierRequirementLevel`), `OnboardingProfile`
+(+`MaskedIdentifier`, `IdentityDocumentChoice`, `OnboardingAddress`,
+`OnboardingConsent`), `KycSession`, `MockKycEventResult`,
+`WalletReadiness`, `PersonalInfo` (+`VerificationSummary`),
+`CorrectionRequestReceipt`, `KycStatus`, `VerificationSessionStatus`.
+All status enums are unknown-tolerant (`.unknown` fallback) so an old app
+never crashes on a new backend value.
+
+### Security posture
+
+- Applicant/session tokens are excluded from `toJson()` and masked in
+  `toString()` — credentials never round-trip through caches or logs.
+- Sensitive identifiers (SSN/ITIN/CURP) surface as type+last4
+  `MaskedIdentifier` only; the raw value is submitted once and hashed
+  server-side.
+- Applicant-scoped auth rides the existing `PuenteConfig.tokenProvider`
+  mechanism (no `sk_` keys in mobile code).
+
+### Mock transport
+
+`MockTransport` models the whole onboarding/KYC surface with the exact
+backend wire shapes and error codes (`underage`, `identifier_not_allowed`,
+`document_not_supported`, `stale_disclosure_version`, `profile_incomplete`,
+`consent_required`, `terminal_state`, `already_approved`,
+`profile_locked`, `no_session`, …), single-active-session semantics, the
+mock-events state machine, and policy-flagged paths that route to manual
+review even on provider approval. Deterministic; the mock never
+self-approves.
+
+### Housekeeping
+
+- `packageVersion` const (was stale at `0.3.0`) synced with pubspec at
+  `0.4.0`.
+- 45 new tests (196 assertions across the KYC flow); suite now 151 tests.
+
+### Companion Puente changes
+
+`feature/puente-kyc-incode-scaffold`: migration `0012_kyc_onboarding.sql`,
+`kyc::{router,policy,provider}`, applicant `pat_…` bearer auth in
+`auth_middleware`, Incode Omni provider scaffold behind `VENDOR_MODE`.
+
 ## 0.3.1 — 2026-07-06
 
 **Mock fee fixture: USD-anchored.** `MockTransport`'s cross-border flat

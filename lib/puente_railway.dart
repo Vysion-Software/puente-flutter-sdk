@@ -42,6 +42,9 @@ export 'src/models/models.dart';
 // Resources.
 export 'src/resources/accounts_resource.dart';
 export 'src/resources/clabe_resource.dart';
+export 'src/resources/kyc_resource.dart';
+export 'src/resources/onboarding_resource.dart';
+export 'src/resources/personal_info_resource.dart';
 export 'src/resources/quotes_resource.dart';
 export 'src/resources/transfers_resource.dart';
 

@@ -58,12 +58,13 @@ class DepositDisplayEstimate extends Equatable {
   /// Display currency code (`"USD"`, `"MXN"`).
   final String currency;
 
-  /// Estimated credit in [currency], as a **display-only decimal
-  /// string**. Never parse it into money arithmetic.
-  final String estimatedCredit;
+  /// Estimated credit in [currency] minor units, verbatim from the wire.
+  /// USD is 1:1 with the expected USDC credit; the backend sends `null`
+  /// for MXN in this MVP (no FX rate exists until a conversion executes).
+  final int? estimatedCreditMinor;
 
-  /// Indicative FX rate used for the estimate, as a decimal string.
-  /// `null` for 1:1 USD display.
+  /// Indicative FX rate used for the estimate, as a decimal string
+  /// (`"1"` for USD). `null` when the backend attached no rate (MXN).
   final String? fxRate;
 
   /// FX labeling — the backend sends `"indicative"`: the rate is not a
@@ -73,7 +74,7 @@ class DepositDisplayEstimate extends Equatable {
   /// Build a [DepositDisplayEstimate].
   const DepositDisplayEstimate({
     required this.currency,
-    required this.estimatedCredit,
+    this.estimatedCreditMinor,
     this.fxRate,
     this.fxType = 'indicative',
   });
@@ -82,7 +83,7 @@ class DepositDisplayEstimate extends Equatable {
   factory DepositDisplayEstimate.fromJson(Map<String, dynamic> json) =>
       DepositDisplayEstimate(
         currency: json['currency'] as String? ?? 'USD',
-        estimatedCredit: json['estimated_credit']?.toString() ?? '0',
+        estimatedCreditMinor: json['estimated_credit_minor'] as int?,
         fxRate: json['fx_rate']?.toString(),
         fxType: json['fx_type'] as String? ?? 'indicative',
       );
@@ -90,13 +91,13 @@ class DepositDisplayEstimate extends Equatable {
   /// Encode back to the wire shape. Round-trips through [fromJson].
   Map<String, dynamic> toJson() => <String, dynamic>{
         'currency': currency,
-        'estimated_credit': estimatedCredit,
-        if (fxRate != null) 'fx_rate': fxRate,
+        'estimated_credit_minor': estimatedCreditMinor,
+        'fx_rate': fxRate,
         'fx_type': fxType,
       };
 
   @override
-  List<Object?> get props => [currency, estimatedCredit, fxRate, fxType];
+  List<Object?> get props => [currency, estimatedCreditMinor, fxRate, fxType];
 }
 
 /// A deposit route quote (`POST /v1/deposit-sessions/{id}/quotes`).

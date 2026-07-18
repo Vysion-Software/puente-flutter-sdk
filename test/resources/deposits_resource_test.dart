@@ -37,12 +37,13 @@ void main() {
         userId: userId,
         sourceNetwork: asset.network,
         sourceAssetId: asset.id,
-        sourceWalletAddress: '0xUserWallet',
+        sourceWalletAddress: '0x1111111111111111111111111111111111111111',
         sourceAmountMinor: 100000000, // 100 USDC (6 decimals)
       );
     }
 
-    test('create → quote → prepare → submit → watch to credited', () async {
+    test('create → quote → prepare → submit → settle_finalized → credited',
+        () async {
       final assets = await client.deposits.getSupportedAssets();
       expect(assets, hasLength(2));
       expect(assets.every((a) => a.enabled), isTrue);
@@ -51,6 +52,8 @@ void main() {
       final session = await createSession();
       expect(session.id, startsWith('dep_'));
       expect(session.status, DepositStatus.created);
+      expect(session.provider, 'mock');
+      expect(session.riskStatus, 'none');
       expect(session.destinationNetwork, 'solana');
       expect(session.destinationMint, MockTransport.depositUsdcMintFixture);
       expect(session.destinationAddress, isNotNull);
@@ -61,8 +64,10 @@ void main() {
       final quote = quoted.quote!;
       // Integer passthrough of the mock's fixture policy — the SDK does
       // NO math; these pins prove the wire values arrive verbatim.
-      const fixtureFees = MockTransport.depositGasFeeUsdcFixtureMinor +
-          MockTransport.depositServiceFeeUsdcFixtureMinor;
+      // Fixture math mirrors the backend mock: 0.4% service + $0.18 gas.
+      const fixtureFees =
+          100000000 * MockTransport.depositServiceFeeBpsFixture ~/ 10000 +
+              MockTransport.depositGasFeeUsdcFixtureMinor;
       expect(quote.sourceAmountMinor, 100000000);
       expect(quote.expectedDestinationMinor, 100000000 - fixtureFees);
       expect(
@@ -73,7 +78,8 @@ void main() {
 
       final prepared = await client.deposits.prepare(session.id);
       expect(prepared.session.status, DepositStatus.prepared);
-      expect(prepared.providerRouteId, startsWith('rt_'));
+      expect(prepared.providerRouteId, isNotNull);
+      expect(prepared.providerRouteId, isNotEmpty);
       expect(prepared.spender, MockTransport.depositSpenderFixture);
       final approval = prepared.approval;
       expect(approval, isA<EvmErc20ApprovalSigningRequest>());
@@ -87,12 +93,20 @@ void main() {
         session.id,
         transactionHash: '0xabc123',
       );
-      // Zero settlement latency → the mock settles synchronously.
-      expect(submitted.status, DepositStatus.credited);
+      // Mirrors the real backend: nothing settles on its own — the
+      // session stays `submitted` until the mock-events driver advances
+      // it (smoke.sh precedent).
+      expect(submitted.status, DepositStatus.submitted);
       expect(submitted.sourceTxHash, '0xabc123');
-      expect(submitted.actualDestinationMinor, quote.expectedDestinationMinor);
-      expect(submitted.creditedAt, isNotNull);
-      expect(submitted.destinationTxSignature, isNotNull);
+
+      final credited =
+          await client.deposits.sendMockEvent(session.id, 'settle_finalized');
+      expect(credited.status, DepositStatus.credited);
+      expect(credited.actualDestinationMinor, quote.expectedDestinationMinor);
+      expect(credited.creditedAt, isNotNull);
+      expect(credited.destinationTxSignature, isNotNull);
+      expect(credited.ledgerTransactionId, isNotNull);
+      expect(credited.destinationEventIndex, 0);
 
       final seen = await client.deposits
           .watch(
@@ -105,17 +119,17 @@ void main() {
       expect(seen.last.status, DepositStatus.credited);
       expect(seen.last.status.isTerminal, isTrue);
 
+      // Events mirror the backend: the first recorded event is
+      // created → quoted (no creation event).
       final events = await client.deposits.events(session.id);
-      expect(events.first.fromStatus, isNull);
-      expect(events.first.toStatus, DepositStatus.created);
+      expect(events.first.fromStatus, DepositStatus.created);
+      expect(events.first.toStatus, DepositStatus.quoted);
       expect(
         events.map((e) => e.toStatus).toList(),
         containsAllInOrder(const [
-          DepositStatus.created,
           DepositStatus.quoted,
           DepositStatus.prepared,
           DepositStatus.submitted,
-          DepositStatus.routing,
           DepositStatus.destinationDetected,
           DepositStatus.credited,
         ]),
@@ -141,24 +155,30 @@ void main() {
       final held =
           await client.deposits.sendMockEvent(session.id, 'compliance_hold');
       expect(held.status, DepositStatus.complianceHold);
+      expect(held.riskStatus, 'hold');
+      expect(held.ledgerTransactionId, isNull);
       // A hold is NOT terminal — watch keeps polling through it.
       expect(held.status.isTerminal, isFalse);
 
+      // Mirrors the backend: releasing only flips risk_status; the status
+      // stays compliance_hold until an explicit credit posts the ledger
+      // credit.
       final released =
           await client.deposits.sendMockEvent(session.id, 'compliance_release');
-      expect(released.status, DepositStatus.destinationDetected);
+      expect(released.status, DepositStatus.complianceHold);
+      expect(released.riskStatus, 'released');
 
       final credited =
           await client.deposits.sendMockEvent(session.id, 'credit');
       expect(credited.status, DepositStatus.credited);
       expect(credited.creditedAt, isNotNull);
+      expect(credited.ledgerTransactionId, isNotNull);
 
       final events = await client.deposits.events(session.id);
       expect(
         events.map((e) => e.toStatus).toList(),
         containsAllInOrder(const [
           DepositStatus.complianceHold,
-          DepositStatus.destinationDetected,
           DepositStatus.credited,
         ]),
       );
@@ -184,7 +204,7 @@ void main() {
         'routing',
         'settle',
         'compliance_hold',
-        'compliance_release',
+        'compliance_release', // risk released; status stays compliance_hold
         'credit',
       ]) {
         await client.deposits.sendMockEvent(session.id, scenario);
@@ -224,15 +244,17 @@ void main() {
       });
     });
 
-    test('quote_expired mock scenario is a terminal failure for watch',
+    test('route_failed mock scenario is a terminal failure for watch',
         () async {
-      final session = await createSession(userId: 'usr_qexp');
+      final session = await createSession(userId: 'usr_rfail');
       await client.deposits.getQuote(session.id);
-      final expired =
-          await client.deposits.sendMockEvent(session.id, 'quote_expired');
-      expect(expired.status, DepositStatus.quoteExpired);
-      expect(expired.status.isTerminal, isTrue);
-      expect(expired.failureCode, 'quote_expired');
+      await client.deposits.prepare(session.id);
+      await client.deposits.sendMockEvent(session.id, 'submitted');
+      final failed =
+          await client.deposits.sendMockEvent(session.id, 'route_failed');
+      expect(failed.status, DepositStatus.routeFailed);
+      expect(failed.status.isTerminal, isTrue);
+      expect(failed.failureCode, 'route_failed');
 
       final seen = await client.deposits
           .watch(
@@ -241,7 +263,7 @@ void main() {
             timeout: const Duration(seconds: 2),
           )
           .toList();
-      expect(seen.last.status, DepositStatus.quoteExpired);
+      expect(seen.last.status, DepositStatus.routeFailed);
     });
 
     test('list filters by user and pages newest first', () async {

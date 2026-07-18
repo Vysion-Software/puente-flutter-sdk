@@ -5,19 +5,16 @@ import 'deposit_status.dart';
 /// One append-only audit entry from a deposit session's transition log
 /// (`GET /v1/deposit-sessions/{id}/events`).
 ///
-/// Events mirror the backend's `deposit_events` table: every status
-/// transition is recorded with who caused it and a sanitized detail
-/// payload. Read-only — clients render the timeline, nothing more.
+/// Events mirror the backend's wire doc exactly: `{from_status,
+/// to_status, detail, created_at}` — every status transition with a
+/// sanitized detail payload. Read-only — clients render the timeline,
+/// nothing more.
 class DepositEvent extends Equatable {
-  /// Status before the transition. `null` on the creation event.
+  /// Status before the transition.
   final DepositStatus? fromStatus;
 
   /// Status after the transition.
   final DepositStatus toStatus;
-
-  /// Who drove the transition (`"client"`, `"worker"`, `"provider"`,
-  /// `"mock"`, …), when the server sent it.
-  final String? actor;
 
   /// Sanitized transition detail (provider snapshot excerpts, failure
   /// context). Free-form JSON object; may be `null`.
@@ -31,7 +28,6 @@ class DepositEvent extends Equatable {
     required this.toStatus,
     required this.createdAt,
     this.fromStatus,
-    this.actor,
     this.detail,
   });
 
@@ -41,7 +37,6 @@ class DepositEvent extends Equatable {
             ? DepositStatus.fromWire(json['from_status'] as String)
             : null,
         toStatus: DepositStatus.fromWire(json['to_status'] as String?),
-        actor: json['actor'] as String?,
         detail: json['detail'] is Map
             ? (json['detail'] as Map).cast<String, dynamic>()
             : null,
@@ -54,11 +49,10 @@ class DepositEvent extends Equatable {
   Map<String, dynamic> toJson() => <String, dynamic>{
         if (fromStatus != null) 'from_status': fromStatus!.wire,
         'to_status': toStatus.wire,
-        if (actor != null) 'actor': actor,
         if (detail != null) 'detail': detail,
         'created_at': createdAt.toUtc().toIso8601String(),
       };
 
   @override
-  List<Object?> get props => [fromStatus, toStatus, actor, detail, createdAt];
+  List<Object?> get props => [fromStatus, toStatus, detail, createdAt];
 }

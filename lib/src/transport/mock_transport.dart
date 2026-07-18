@@ -1511,13 +1511,20 @@ class MockTransport implements PuenteTransport {
   // minor units end to end; the only doubles are display-only estimate
   // strings, mirroring the backend's labeled-indicative display block.
 
-  /// Fixture: provider gas fee on a deposit route, in 6-decimal USDC
-  /// minor units ($0.10). NOT production truth.
-  static const int depositGasFeeUsdcFixtureMinor = 100000;
+  /// Fixture: provider gas-receiver fee on a deposit route, in 6-decimal
+  /// USDC minor units ($0.18) — mirrors the backend `MockDepositProvider`
+  /// (`crates/puente-deposits/src/mock.rs`). NOT production truth.
+  static const int depositGasFeeUsdcFixtureMinor = 180000;
 
-  /// Fixture: provider service fee on a deposit route, in 6-decimal USDC
-  /// minor units ($0.25). NOT production truth.
-  static const int depositServiceFeeUsdcFixtureMinor = 250000;
+  /// Fixture: provider service fee in basis points of the source amount
+  /// (0.4%) — mirrors the backend `MockDepositProvider`. NOT production
+  /// truth.
+  static const int depositServiceFeeBpsFixture = 40;
+
+  /// Fixture: settled amounts at/above this go to `compliance_hold`
+  /// instead of crediting — mirrors the backend default
+  /// `DEPOSIT_COMPLIANCE_HOLD_THRESHOLD_USDC_MINOR` (5 000 USDC).
+  static const int depositComplianceHoldThresholdFixtureMinor = 5000000000;
 
   /// Fixture: mainnet native Circle USDC mint used as the deposit
   /// destination (verified constant, but the address assignment is mock).
@@ -1539,7 +1546,7 @@ class MockTransport implements PuenteTransport {
       'network': 'base',
       'chain_id': '8453',
       'symbol': 'USDC',
-      'name': 'USD Coin',
+      'name': 'USDC',
       'decimals': 6,
       'min_amount_minor': 1000000,
       'max_amount_minor': 10000000000,
@@ -1550,7 +1557,7 @@ class MockTransport implements PuenteTransport {
       'network': 'ethereum',
       'chain_id': '1',
       'symbol': 'USDC',
-      'name': 'USD Coin',
+      'name': 'USDC',
       'decimals': 6,
       'min_amount_minor': 1000000,
       'max_amount_minor': 10000000000,
@@ -1563,6 +1570,17 @@ class MockTransport implements PuenteTransport {
     // Master flag — mirrors DEPOSITS_ENABLED=false → 503 on every route.
     if (!depositsEnabled) {
       throw const _MockError(503, 'deposits_disabled', 'deposits are disabled');
+    }
+
+    // Idempotency middleware parity: every POST requires an
+    // Idempotency-Key. The real backend answers 400 with a PLAIN-TEXT
+    // body (not the JSON error envelope) — mirror that exactly.
+    if (method == 'POST' && request.idempotencyKey == null) {
+      return const PuenteResponse(
+        statusCode: 400,
+        headers: <String, String>{'content-type': 'text/plain'},
+        body: 'Missing Idempotency-Key',
+      );
     }
 
     if (method == 'GET' && path == '/deposit-assets') {
@@ -1642,18 +1660,21 @@ class MockTransport implements PuenteTransport {
     Map<String, dynamic> doc,
     String? from,
     String to, {
-    String actor = 'mock',
     Map<String, dynamic>? detail,
   }) {
     final now = clock.now().toUtc().toIso8601String();
     doc['status'] = to;
     doc['updated_at'] = now;
+    // Event shape mirrors `GET …/events` on the real backend exactly:
+    // {from_status, to_status, detail, created_at} — no `actor` key, and
+    // no event is recorded for session creation (the first event is
+    // created → quoted).
+    if (from == null) return;
     _depositEvents
         .putIfAbsent(doc['id'] as String, () => <Map<String, dynamic>>[])
         .add(<String, dynamic>{
       'from_status': from,
       'to_status': to,
-      'actor': actor,
       'detail': detail,
       'created_at': now,
     });
@@ -1679,10 +1700,14 @@ class MockTransport implements PuenteTransport {
           'user_id, source_network, source_asset_id, source_wallet_address, '
               'source_amount_minor required');
     }
-    // Solana-source is a documented capability gap in this MVP.
-    if (sourceNetwork == 'solana') {
-      throw const _MockError(503, 'capability_unavailable',
-          'solana-source deposits are not available yet');
+    // Allowlist resolution mirrors the backend `resolve_asset`: unknown
+    // network → 422 unsupported_network; known network but unlisted
+    // asset → 422 unsupported_asset.
+    final networkKnown =
+        depositAssetFixtures.any((a) => a['network'] == sourceNetwork);
+    if (!networkKnown) {
+      throw _MockError(422, 'unsupported_network',
+          'network $sourceNetwork is not supported');
     }
     final asset = depositAssetFixtures
         .where((a) =>
@@ -1691,18 +1716,35 @@ class MockTransport implements PuenteTransport {
             a['enabled'] == true)
         .toList();
     if (asset.isEmpty) {
-      throw _MockError(400, 'unsupported_asset',
+      throw _MockError(422, 'unsupported_asset',
           'asset $sourceAssetId on $sourceNetwork is not supported');
     }
     final minMinor = asset.first['min_amount_minor'] as int;
     final maxMinor = asset.first['max_amount_minor'] as int;
     if (sourceAmountMinor < minMinor) {
-      throw _MockError(400, 'amount_below_minimum',
+      throw _MockError(422, 'amount_below_minimum',
           'minimum deposit is $minMinor minor units');
     }
     if (sourceAmountMinor > maxMinor) {
-      throw _MockError(400, 'amount_above_maximum',
+      throw _MockError(422, 'amount_above_maximum',
           'maximum deposit is $maxMinor minor units');
+    }
+    // EVM wallet shape gate, mirroring the backend's per-family check.
+    final hex = sourceWalletAddress.startsWith('0x')
+        ? sourceWalletAddress.substring(2)
+        : null;
+    if (hex == null ||
+        hex.length != 40 ||
+        !RegExp(r'^[0-9a-fA-F]+$').hasMatch(hex)) {
+      throw const _MockError(422, 'invalid_request',
+          'source_wallet_address is not valid for the source network');
+    }
+    final displayCurrency = body['display_currency'] as String?;
+    if (displayCurrency != null &&
+        displayCurrency != 'USD' &&
+        displayCurrency != 'MXN') {
+      throw const _MockError(
+          422, 'invalid_request', 'display_currency must be USD or MXN');
     }
 
     final id = 'dep_${_uuid.v4().replaceAll('-', '').substring(0, 16)}';
@@ -1712,9 +1754,12 @@ class MockTransport implements PuenteTransport {
         ? sourceAssetId.substring(sourceAssetId.indexOf(':') + 1)
         : sourceAssetId;
     final doc = <String, dynamic>{
+      'object': 'deposit_session',
       'id': id,
       'user_id': userId,
       'status': 'created',
+      'provider': 'mock',
+      'risk_status': 'none',
       'source_network': sourceNetwork,
       'source_asset_id': sourceAssetId,
       'source_token': token,
@@ -1724,9 +1769,11 @@ class MockTransport implements PuenteTransport {
       'destination_network': 'solana',
       'destination_mint': depositUsdcMintFixture,
       'destination_address': _mockDepositAddress(userId),
+      'destination_event_index': null,
       'expected_destination_minor': null,
       'minimum_destination_minor': null,
       'actual_destination_minor': null,
+      'ledger_transaction_id': null,
       'quote': null,
       'provider_route_id': null,
       'spender': null,
@@ -1736,7 +1783,7 @@ class MockTransport implements PuenteTransport {
       'destination_tx_signature': null,
       'failure_code': null,
       'failure_details': null,
-      'display_currency': (body['display_currency'] as String?) ?? 'USD',
+      'display_currency': displayCurrency,
       'display_estimate': null,
       'created_at': now,
       'updated_at': now,
@@ -1745,17 +1792,16 @@ class MockTransport implements PuenteTransport {
       'confirmed_at': null,
       'credited_at': null,
       'swept_at': null,
-      'reconciled_at': null,
     };
     _deposits[id] = doc;
-    _depositTransition(doc, null, 'created', actor: 'client');
     return _jsonResponse(201, doc);
   }
 
-  /// Fixture quote math (labeled — NOT production truth): destination =
-  /// source − fixture fees, minimum = 99% of expected (1% slippage
-  /// fixture), TTL mirrors `DEPOSIT_QUOTE_TTL_SECS` (2 min). All integer
-  /// arithmetic on minor units; display strings are labeled indicative.
+  /// Fixture quote math mirroring the backend `MockDepositProvider`
+  /// (labeled — NOT production truth): service fee = 0.4% of source, gas
+  /// receiver fee = $0.18, destination = source − fees, minimum = 99% of
+  /// expected (1% slippage), TTL mirrors `DEPOSIT_QUOTE_TTL_SECS` (2 min).
+  /// All integer arithmetic on minor units.
   PuenteResponse _quoteDepositSession(String id) {
     final doc = _requireDeposit(id);
     final status = doc['status'] as String;
@@ -1764,36 +1810,37 @@ class MockTransport implements PuenteTransport {
       throw _MockError(409, 'illegal_state', 'cannot quote a $status deposit');
     }
     final src = doc['source_amount_minor'] as int;
-    const totalFeesMinor =
-        depositGasFeeUsdcFixtureMinor + depositServiceFeeUsdcFixtureMinor;
+    final serviceFee = src * depositServiceFeeBpsFixture ~/ 10000;
+    const gasFee = depositGasFeeUsdcFixtureMinor;
+    final totalFeesMinor = serviceFee + gasFee;
     final expected = src - totalFeesMinor;
     final minimum = expected * 99 ~/ 100;
     final now = clock.now();
     final expiresAt = now.add(_quoteTtl).toUtc().toIso8601String();
 
-    final displayCurrency = doc['display_currency'] as String? ?? 'USD';
-    final display = _depositDisplayFixture(displayCurrency, expected);
+    final display =
+        _depositDisplayFixture(doc['display_currency'] as String?, expected);
+    // Fee `kind` is the vendor string verbatim (kind == label on the real
+    // wire); `amount_usd` is a 6-decimal display string.
     final quote = <String, dynamic>{
       'source_amount_minor': src,
       'expected_destination_minor': expected,
       'minimum_destination_minor': minimum,
       'fees': <Map<String, dynamic>>[
         <String, dynamic>{
-          'kind': 'gas',
-          'amount_minor': depositGasFeeUsdcFixtureMinor,
-          'amount_usd':
-              _usdcMinorToDecimalString(depositGasFeeUsdcFixtureMinor),
-          'label': 'Gas receiver fee',
+          'kind': 'Service fee',
+          'label': 'Service fee',
+          'amount_minor': serviceFee,
+          'amount_usd': _usdMinorToDecimalString(serviceFee),
         },
         <String, dynamic>{
-          'kind': 'service',
-          'amount_minor': depositServiceFeeUsdcFixtureMinor,
-          'amount_usd':
-              _usdcMinorToDecimalString(depositServiceFeeUsdcFixtureMinor),
-          'label': 'Service fee',
+          'kind': 'Gas receiver fee',
+          'label': 'Gas receiver fee',
+          'amount_minor': gasFee,
+          'amount_usd': _usdMinorToDecimalString(gasFee),
         },
       ],
-      'total_fees_usd': _usdcMinorToDecimalString(totalFeesMinor),
+      'total_fees_usd': _usdMinorToDecimalString(totalFeesMinor),
       'expires_at': expiresAt,
       'display': display,
     };
@@ -1801,37 +1848,44 @@ class MockTransport implements PuenteTransport {
     doc['expected_destination_minor'] = expected;
     doc['minimum_destination_minor'] = minimum;
     doc['display_estimate'] = display;
-    _depositTransition(doc, status, 'quoted', actor: 'client');
+    _depositTransition(doc, status, 'quoted', detail: <String, dynamic>{
+      'expected_destination_minor': expected,
+      'minimum_destination_minor': minimum,
+      'expires_at': expiresAt,
+    });
     return _jsonResponse(200, doc);
   }
 
-  /// Display-only estimate block. USD is 1:1 with the USDC credit; MXN
-  /// uses the fixture rate table and is labeled `indicative` — the real
-  /// backend never creates an FX liability from this.
+  /// Display-only estimate block — mirrors the backend `display_estimate`
+  /// exactly: USD is 1:1 with the expected USDC credit
+  /// (`estimated_credit_minor` int, `fx_rate` `"1"`); MXN carries NO
+  /// estimate and NO rate in this MVP (`null`s, labeled `indicative`) —
+  /// no FX liability exists until a conversion actually executes.
   Map<String, dynamic> _depositDisplayFixture(
-      String currency, int expectedUsdcMinor) {
+      String? currency, int expectedUsdcMinor) {
     if (currency == 'MXN') {
-      final rate = _rates['USDC->MXN'] ?? 0;
-      final estimated = (expectedUsdcMinor / 1000000) * rate;
       return <String, dynamic>{
         'currency': 'MXN',
-        'estimated_credit': estimated.toStringAsFixed(2),
-        'fx_rate': rate.toString(),
+        'estimated_credit_minor': null,
+        'fx_rate': null,
         'fx_type': 'indicative',
       };
     }
     return <String, dynamic>{
       'currency': 'USD',
-      'estimated_credit': _usdcMinorToDecimalString(expectedUsdcMinor),
+      'estimated_credit_minor': expectedUsdcMinor,
+      'fx_rate': '1',
       'fx_type': 'indicative',
     };
   }
 
-  /// 6-decimal USDC minor units → `"12.34"` (2dp, integer math — no
-  /// doubles on the USD path).
-  String _usdcMinorToDecimalString(int minor) {
-    final cents = minor ~/ 10000;
-    return '${cents ~/ 100}.${(cents % 100).toString().padLeft(2, '0')}';
+  /// 6-decimal USD minor units → 6-decimal display string
+  /// (`493827` → `"0.493827"`) — mirrors the backend
+  /// `minor_to_decimal_string(…, 6)`.
+  String _usdMinorToDecimalString(int minor) {
+    final whole = minor ~/ 1000000;
+    final frac = (minor % 1000000).toString().padLeft(6, '0');
+    return '$whole.$frac';
   }
 
   PuenteResponse _prepareDepositSession(String id) {
@@ -1857,8 +1911,7 @@ class MockTransport implements PuenteTransport {
     final token = doc['source_token'] as String;
     final from = doc['source_wallet_address'] as String;
     final amount = doc['source_amount_minor'] as int;
-    doc['provider_route_id'] =
-        'rt_${_uuid.v4().replaceAll('-', '').substring(0, 12)}';
+    doc['provider_route_id'] = _uuid.v4();
     doc['spender'] = depositSpenderFixture;
     // Exact-amount approval (never unlimited) + route transaction. The
     // calldata below is an obviously-fake fixture payload.
@@ -1880,11 +1933,14 @@ class MockTransport implements PuenteTransport {
       'to': depositSpenderFixture,
       'data': '0x38ed1739${'0' * 192}',
       'value': '0',
-      'gas_limit': null,
+      'gas_limit': '250000',
       'max_fee_per_gas': null,
       'max_priority_fee_per_gas': null,
     };
-    _depositTransition(doc, status, 'prepared', actor: 'client');
+    _depositTransition(doc, status, 'prepared', detail: <String, dynamic>{
+      'provider_route_id': doc['provider_route_id'],
+      'spender': doc['spender'],
+    });
     return _jsonResponse(200, doc);
   }
 
@@ -1903,60 +1959,61 @@ class MockTransport implements PuenteTransport {
     }
     doc['source_tx_hash'] = hash;
     doc['submitted_at'] = clock.now().toUtc().toIso8601String();
-    _depositTransition(doc, status, 'submitted', actor: 'client');
+    _depositTransition(doc, status, 'submitted',
+        detail: <String, dynamic>{'source_tx_hash': hash});
 
-    // Advance over real time so polling demos see the lifecycle; with
-    // zero latency (unit tests) settle synchronously — the transfers
-    // precedent.
-    if (settlementLatency > Duration.zero) {
-      _timers.add(Timer(settlementLatency ~/ 3, () {
-        if (doc['status'] != 'submitted') return;
-        _depositTransition(doc, 'submitted', 'routing', actor: 'worker');
-      }));
-      _timers.add(Timer(settlementLatency * 2 ~/ 3, () {
-        if (doc['status'] != 'routing') return;
-        _detectDepositSettlement(doc);
-      }));
-      _timers.add(Timer(settlementLatency, () {
-        if (doc['status'] != 'destination_detected') return;
-        _creditDeposit(doc);
-      }));
-    } else {
-      _depositTransition(doc, 'submitted', 'routing', actor: 'worker');
-      _detectDepositSettlement(doc);
-      _creditDeposit(doc);
-    }
+    // Mirror the real backend: the session STAYS `submitted` — nothing
+    // settles on its own. Progression is driven through the mock-events
+    // scenarios (`settle`, `settle_finalized`, …), exactly like
+    // `VENDOR_MODE=mock` on the server (smoke.sh precedent).
     return _jsonResponse(200, doc);
   }
 
   void _detectDepositSettlement(Map<String, dynamic> doc) {
     doc['detected_at'] = clock.now().toUtc().toIso8601String();
-    doc['destination_tx_signature'] ??=
-        'mockSig${_uuid.v4().replaceAll('-', '')}';
+    doc['destination_tx_signature'] ??= 'mock${_uuid.v4().replaceAll('-', '')}';
+    doc['destination_event_index'] ??= 0;
     _depositTransition(doc, doc['status'] as String, 'destination_detected',
-        actor: 'worker');
+        detail: <String, dynamic>{
+          'tx_signature': doc['destination_tx_signature'],
+          'event_index': doc['destination_event_index'],
+        });
   }
 
+  /// Ledger-credit attempt, mirroring the backend `finalize_and_credit`
+  /// gates: a settled amount at/above the compliance threshold parks in
+  /// `compliance_hold` (risk_status `hold`, NO ledger credit) until an
+  /// explicit `compliance_release` + `credit`.
   void _creditDeposit(Map<String, dynamic> doc) {
     final now = clock.now().toUtc().toIso8601String();
     doc['detected_at'] ??= now;
     doc['confirmed_at'] = now;
-    doc['credited_at'] = now;
-    doc['destination_tx_signature'] ??=
-        'mockSig${_uuid.v4().replaceAll('-', '')}';
+    doc['destination_tx_signature'] ??= 'mock${_uuid.v4().replaceAll('-', '')}';
+    doc['destination_event_index'] ??= 0;
     // The ledger credits the ACTUAL settled amount. The mock settles
     // exactly the expected fixture amount (source verbatim when never
     // quoted — mock-events can credit an unquoted session).
-    doc['actual_destination_minor'] =
-        doc['expected_destination_minor'] ?? doc['source_amount_minor'];
+    final amount = (doc['expected_destination_minor'] ??
+        doc['source_amount_minor']) as int;
+    final held = amount >= depositComplianceHoldThresholdFixtureMinor &&
+        doc['risk_status'] != 'released';
+    if (held) {
+      doc['risk_status'] = 'hold';
+      _depositTransition(doc, doc['status'] as String, 'compliance_hold',
+          detail: <String, dynamic>{'amount_minor': amount});
+      return;
+    }
+    doc['actual_destination_minor'] = amount;
+    doc['credited_at'] = now;
+    doc['ledger_transaction_id'] = _uuid.v4();
     _depositTransition(doc, doc['status'] as String, 'credited',
-        actor: 'worker');
+        detail: <String, dynamic>{'amount_minor': amount});
   }
 
   void _failDeposit(Map<String, dynamic> doc, String code, String details) {
     doc['failure_code'] = code;
     doc['failure_details'] = details;
-    _depositTransition(doc, doc['status'] as String, code, actor: 'worker');
+    _depositTransition(doc, doc['status'] as String, code);
   }
 
   static const Set<String> _terminalDepositStatuses = <String>{
@@ -1965,18 +2022,18 @@ class MockTransport implements PuenteTransport {
     'amount_mismatch', 'compliance_rejected', 'manual_review', //
   };
 
-  /// Mock-events lifecycle driver (`VENDOR_MODE=mock` precedent from the
-  /// KYC branch): the mock NEVER settles or fails on its own beyond the
-  /// happy-path timers — exceptional outcomes only move via scenarios.
+  /// Mock-events lifecycle driver — mirrors the backend's
+  /// `VENDOR_MODE=mock` scenario vocabulary verbatim
+  /// (`puente-api/src/deposits.rs`): `quote | prepared | submitted |
+  /// routing | settle | settle_finalized | underpay | wrong_asset |
+  /// route_failed | compliance_hold | compliance_release | credit |
+  /// sweep`. Unknown scenarios answer `400 invalid_request: unknown
+  /// scenario "…"` exactly like the server.
   PuenteResponse _depositMockEvent(String id, PuenteRequest request) {
     final doc = _requireDeposit(id);
     final body = _decodeBody(request);
     final scenario = body['scenario'] as String?;
     final status = doc['status'] as String;
-
-    if (_terminalDepositStatuses.contains(status)) {
-      throw _MockError(409, 'illegal_state', 'deposit $id is already $status');
-    }
 
     bool preCredit() =>
         status != 'credited' && !_terminalDepositStatuses.contains(status);
@@ -1991,66 +2048,82 @@ class MockTransport implements PuenteTransport {
           throw _MockError(
               409, 'illegal_state', 'cannot submit a $status deposit');
         }
-        doc['source_tx_hash'] ??= '0xf1c70${'0' * 59}';
+        doc['source_tx_hash'] ??= 'mocktx${_uuid.v4().replaceAll('-', '')}';
         doc['submitted_at'] = clock.now().toUtc().toIso8601String();
-        _depositTransition(doc, status, 'submitted', actor: 'client');
+        _depositTransition(doc, status, 'submitted',
+            detail: <String, dynamic>{'source_tx_hash': doc['source_tx_hash']});
       case 'routing':
         if (status != 'submitted') {
           throw _MockError(
               409, 'illegal_state', 'cannot route a $status deposit');
         }
-        _depositTransition(doc, status, 'routing', actor: 'worker');
+        _depositTransition(doc, status, 'routing');
       case 'settle':
+        // Settlement at `confirmed` commitment: detected, not credited
+        // (the default finalized policy waits for settle_finalized).
+        if (status == 'credited') return _jsonResponse(200, doc);
         if (status != 'submitted' && status != 'routing') {
           throw _MockError(
               409, 'illegal_state', 'cannot settle a $status deposit');
         }
         _detectDepositSettlement(doc);
       case 'settle_finalized':
+        // Re-finalizing a credited deposit is a no-op on the real
+        // backend (the credit posts exactly once) — mirror the 200.
+        if (status == 'credited') return _jsonResponse(200, doc);
         if (status != 'submitted' &&
             status != 'routing' &&
             status != 'destination_detected') {
           throw _MockError(
               409, 'illegal_state', 'cannot finalize a $status deposit');
         }
+        if (status != 'destination_detected') _detectDepositSettlement(doc);
         _creditDeposit(doc);
       case 'compliance_hold':
         if (!preCredit()) {
           throw _MockError(
               409, 'illegal_state', 'cannot hold a $status deposit');
         }
-        _depositTransition(doc, status, 'compliance_hold', actor: 'worker');
+        doc['risk_status'] = 'hold';
+        _depositTransition(doc, status, 'compliance_hold');
       case 'compliance_release':
+        // Mirrors the backend: releasing only flips risk_status to
+        // `released` — the status STAYS compliance_hold until an explicit
+        // `credit` scenario posts the ledger credit.
         if (status != 'compliance_hold') {
           throw _MockError(409, 'illegal_state', 'deposit $id is not on hold');
         }
-        doc['detected_at'] ??= clock.now().toUtc().toIso8601String();
-        _depositTransition(doc, status, 'destination_detected',
-            actor: 'worker');
+        doc['risk_status'] = 'released';
+        doc['updated_at'] = clock.now().toUtc().toIso8601String();
       case 'credit':
-        if (status != 'destination_detected') {
+        if (status == 'credited') return _jsonResponse(200, doc);
+        if (status != 'destination_detected' &&
+            !(status == 'compliance_hold' &&
+                doc['risk_status'] == 'released')) {
           throw _MockError(
               409, 'illegal_state', 'cannot credit a $status deposit');
         }
         _creditDeposit(doc);
       case 'sweep':
-        if (status != 'credited') {
-          throw _MockError(
-              409, 'illegal_state', 'cannot sweep a $status deposit');
+        // The backend sweep scenario sweeps whatever has credited and
+        // returns 200 either way — an uncredited session is a no-op.
+        if (status == 'credited') {
+          doc['swept_at'] = clock.now().toUtc().toIso8601String();
+          _depositTransition(doc, status, 'swept');
         }
-        doc['swept_at'] = clock.now().toUtc().toIso8601String();
-        _depositTransition(doc, status, 'swept', actor: 'worker');
       case 'underpay':
         if (!preCredit()) {
           throw _MockError(
               409, 'illegal_state', 'cannot underpay a $status deposit');
         }
+        doc['detected_at'] ??= clock.now().toUtc().toIso8601String();
         _failDeposit(doc, 'amount_mismatch', 'settled below quoted minimum');
       case 'wrong_asset':
         if (!preCredit()) {
           throw _MockError(
               409, 'illegal_state', 'cannot mis-asset a $status deposit');
         }
+        doc['detected_at'] ??= clock.now().toUtc().toIso8601String();
         _failDeposit(doc, 'wrong_asset', 'unexpected asset received');
       case 'route_failed':
         if (!preCredit()) {
@@ -2058,14 +2131,11 @@ class MockTransport implements PuenteTransport {
               409, 'illegal_state', 'cannot fail a $status deposit');
         }
         _failDeposit(doc, 'route_failed', 'provider route failed');
-      case 'quote_expired':
-        if (status != 'created' && status != 'quoted') {
-          throw _MockError(
-              409, 'illegal_state', 'cannot expire a $status deposit');
-        }
-        _failDeposit(doc, 'quote_expired', 'quote lapsed before prepare');
       default:
-        throw const _MockError(422, 'unknown_scenario', 'unknown_scenario');
+        // Backend shape verbatim: 400 {"error":"invalid_request: unknown
+        // scenario \"x\""} — the SDK strips at ':' → code invalid_request.
+        throw _MockError(400, 'invalid_request: unknown scenario "$scenario"',
+            'unknown scenario');
     }
     return _jsonResponse(200, doc);
   }

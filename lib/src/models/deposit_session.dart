@@ -24,6 +24,21 @@ class DepositSession extends Equatable {
   /// `DepositsResource.watch`.
   final DepositStatus status;
 
+  /// Routing provider slug (`"mock"`, `"trustware"`). Informational.
+  final String? provider;
+
+  /// Compliance risk state (`"none"`, `"hold"`, `"released"`, …).
+  /// `"hold"` accompanies [DepositStatus.complianceHold]; the vocabulary
+  /// is backend-defined — render, don't branch on it for money logic.
+  final String? riskStatus;
+
+  /// Ledger transaction id of the customer credit. Non-null exactly once
+  /// the deposit has been credited; the definitive settlement proof.
+  final String? ledgerTransactionId;
+
+  /// Index of the detected settlement event at the deposit address.
+  final int? destinationEventIndex;
+
   /// Source network slug (`"base"`, `"ethereum"`).
   final String? sourceNetwork;
 
@@ -121,9 +136,6 @@ class DepositSession extends Equatable {
   /// When the post-credit treasury sweep confirmed (internal).
   final DateTime? sweptAt;
 
-  /// When reconciliation confirmed the books match (internal).
-  final DateTime? reconciledAt;
-
   /// Build a [DepositSession].
   const DepositSession({
     required this.id,
@@ -131,6 +143,10 @@ class DepositSession extends Equatable {
     required this.sourceAmountMinor,
     required this.createdAt,
     this.userId,
+    this.provider,
+    this.riskStatus,
+    this.ledgerTransactionId,
+    this.destinationEventIndex,
     this.sourceNetwork,
     this.sourceAssetId,
     this.sourceToken,
@@ -159,7 +175,6 @@ class DepositSession extends Equatable {
     this.confirmedAt,
     this.creditedAt,
     this.sweptAt,
-    this.reconciledAt,
   });
 
   /// Decode from the wire shape. Throws [FormatException] when the
@@ -170,6 +185,10 @@ class DepositSession extends Equatable {
         id: _requireString(json, 'id'),
         userId: json['user_id'] as String?,
         status: DepositStatus.fromWire(json['status'] as String?),
+        provider: json['provider'] as String?,
+        riskStatus: json['risk_status'] as String?,
+        ledgerTransactionId: json['ledger_transaction_id'] as String?,
+        destinationEventIndex: json['destination_event_index'] as int?,
         sourceNetwork: json['source_network'] as String?,
         sourceAssetId: json['source_asset_id'] as String?,
         sourceToken: json['source_token'] as String?,
@@ -212,14 +231,20 @@ class DepositSession extends Equatable {
         confirmedAt: _optDate(json['confirmed_at']),
         creditedAt: _optDate(json['credited_at']),
         sweptAt: _optDate(json['swept_at']),
-        reconciledAt: _optDate(json['reconciled_at']),
       );
 
   /// Encode back to the wire shape. Round-trips through [fromJson].
   Map<String, dynamic> toJson() => <String, dynamic>{
+        'object': 'deposit_session',
         'id': id,
         if (userId != null) 'user_id': userId,
         'status': status.wire,
+        if (provider != null) 'provider': provider,
+        if (riskStatus != null) 'risk_status': riskStatus,
+        if (ledgerTransactionId != null)
+          'ledger_transaction_id': ledgerTransactionId,
+        if (destinationEventIndex != null)
+          'destination_event_index': destinationEventIndex,
         if (sourceNetwork != null) 'source_network': sourceNetwork,
         if (sourceAssetId != null) 'source_asset_id': sourceAssetId,
         if (sourceToken != null) 'source_token': sourceToken,
@@ -264,8 +289,6 @@ class DepositSession extends Equatable {
         if (creditedAt != null)
           'credited_at': creditedAt!.toUtc().toIso8601String(),
         if (sweptAt != null) 'swept_at': sweptAt!.toUtc().toIso8601String(),
-        if (reconciledAt != null)
-          'reconciled_at': reconciledAt!.toUtc().toIso8601String(),
       };
 
   static String _requireString(Map<String, dynamic> json, String key) {
@@ -309,6 +332,10 @@ class DepositSession extends Equatable {
         id,
         userId,
         status,
+        provider,
+        riskStatus,
+        ledgerTransactionId,
+        destinationEventIndex,
         sourceNetwork,
         sourceAssetId,
         sourceToken,
@@ -339,6 +366,5 @@ class DepositSession extends Equatable {
         confirmedAt,
         creditedAt,
         sweptAt,
-        reconciledAt,
       ];
 }

@@ -239,18 +239,25 @@ class DepositsResource extends ResourceBase {
 
   /// `POST /v1/deposit-sessions/{id}/mock-events` — drive the MOCK
   /// deposit lifecycle. **LOCAL/TEST ONLY**: the route exists solely in
-  /// `VENDOR_MODE=mock` backends (and `MockTransport`); it 404s on live.
+  /// `VENDOR_MODE=mock` backends (and `MockTransport`); it 403s
+  /// (`mock_events_disabled`) on live.
   ///
-  /// Scenarios (design-doc vocabulary): `quote | prepared | submitted |
-  /// routing | settle | settle_finalized | underpay | wrong_asset |
-  /// route_failed | compliance_hold | compliance_release | credit |
-  /// sweep | quote_expired`. Illegal transitions answer
-  /// `409 illegal_state`. Returns the post-event session.
-  Future<DepositSession> sendMockEvent(String id, String scenario) async {
+  /// Scenarios (backend vocabulary, `puente-api/src/deposits.rs`):
+  /// `quote | prepared | submitted | routing | settle | settle_finalized |
+  /// underpay | wrong_asset | route_failed | compliance_hold |
+  /// compliance_release | credit | sweep`. Unknown scenarios answer
+  /// `400 invalid_request`; illegal transitions `409 illegal_state`.
+  /// Returns the post-event session.
+  Future<DepositSession> sendMockEvent(
+    String id,
+    String scenario, {
+    String? idempotencyKey,
+  }) async {
     final response = await request(PuenteRequest(
       method: 'POST',
       path: '/deposit-sessions/$id/mock-events',
       body: <String, dynamic>{'scenario': scenario},
+      idempotencyKey: idempotencyKey ?? newIdempotencyKey(),
     ));
     return DepositSession.fromJson(response.jsonObject);
   }

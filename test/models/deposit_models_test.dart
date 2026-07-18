@@ -97,7 +97,7 @@ void main() {
       'network': 'base',
       'chain_id': '8453',
       'symbol': 'USDC',
-      'name': 'USD Coin',
+      'name': 'USDC',
       'decimals': 6,
       'min_amount_minor': 1000000,
       'max_amount_minor': 10000000000,
@@ -223,19 +223,19 @@ void main() {
       'minimum_destination_minor': 98653500,
       'fees': [
         {
-          'kind': 'gas',
-          'amount_minor': 100000,
-          'amount_usd': '0.10',
+          'kind': 'Gas receiver fee',
+          'amount_minor': 180000,
+          'amount_usd': '0.180000',
           'label': 'Gas receiver fee',
         },
-        {'kind': 'service', 'amount_usd': '0.25'},
+        {'kind': 'Service fee', 'amount_usd': '0.250000'},
       ],
-      'total_fees_usd': '0.35',
+      'total_fees_usd': '0.430000',
       'expires_at': '2026-07-17T12:02:00.000Z',
       'display': {
         'currency': 'MXN',
-        'estimated_credit': '1966.10',
-        'fx_rate': '19.73',
+        'estimated_credit_minor': null,
+        'fx_rate': null,
         'fx_type': 'indicative',
       },
     };
@@ -246,11 +246,13 @@ void main() {
       expect(quote.expectedDestinationMinor, 99650000);
       expect(quote.minimumDestinationMinor, 98653500);
       expect(quote.fees, hasLength(2));
-      expect(quote.fees.first.amountMinor, 100000);
+      expect(quote.fees.first.amountMinor, 180000);
       expect(quote.fees.last.amountMinor, isNull);
-      expect(quote.totalFeesUsd, '0.35');
+      expect(quote.totalFeesUsd, '0.430000');
       expect(quote.display!.currency, 'MXN');
-      expect(quote.display!.fxRate, '19.73');
+      // MXN carries NO estimate and NO rate in this MVP — labeled only.
+      expect(quote.display!.estimatedCreditMinor, isNull);
+      expect(quote.display!.fxRate, isNull);
       expect(quote.display!.fxType, 'indicative');
       expect(DepositQuote.fromJson(quote.toJson()), quote);
     });
@@ -270,12 +272,24 @@ void main() {
   });
 
   group('DepositDisplayEstimate', () {
-    test('tolerates numeric estimated_credit and missing fx fields', () {
+    test('USD block: 1:1 minor units with fx_rate "1"', () {
       final estimate = DepositDisplayEstimate.fromJson(<String, dynamic>{
         'currency': 'USD',
-        'estimated_credit': 99.65,
+        'estimated_credit_minor': 99650000,
+        'fx_rate': '1',
+        'fx_type': 'indicative',
       });
-      expect(estimate.estimatedCredit, '99.65');
+      expect(estimate.estimatedCreditMinor, 99650000);
+      expect(estimate.fxRate, '1');
+      expect(estimate.fxType, 'indicative');
+      expect(DepositDisplayEstimate.fromJson(estimate.toJson()), estimate);
+    });
+
+    test('tolerates missing estimate and fx fields (MXN wire shape)', () {
+      final estimate = DepositDisplayEstimate.fromJson(<String, dynamic>{
+        'currency': 'MXN',
+      });
+      expect(estimate.estimatedCreditMinor, isNull);
       expect(estimate.fxRate, isNull);
       expect(estimate.fxType, 'indicative');
     });
@@ -283,9 +297,14 @@ void main() {
 
   group('DepositSession', () {
     final fullJson = <String, dynamic>{
+      'object': 'deposit_session',
       'id': 'dep_0123456789abcdef',
       'user_id': 'usr_42',
       'status': 'credited',
+      'provider': 'mock',
+      'risk_status': 'none',
+      'ledger_transaction_id': 'db2a5cbf-f853-491c-ace6-3fa7e4a536e5',
+      'destination_event_index': 0,
       'source_network': 'base',
       'source_asset_id': 'base:0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
       'source_token': '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
@@ -336,11 +355,11 @@ void main() {
       'destination_tx_signature': 'mockSig123',
       'failure_code': null,
       'failure_details': null,
-      'display_currency': 'MXN',
+      'display_currency': 'USD',
       'display_estimate': {
-        'currency': 'MXN',
-        'estimated_credit': '1966.10',
-        'fx_rate': '19.73',
+        'currency': 'USD',
+        'estimated_credit_minor': 99650000,
+        'fx_rate': '1',
         'fx_type': 'indicative',
       },
       'created_at': '2026-07-17T12:00:00.000Z',
@@ -350,7 +369,6 @@ void main() {
       'confirmed_at': '2026-07-17T12:04:00.000Z',
       'credited_at': '2026-07-17T12:05:00.000Z',
       'swept_at': null,
-      'reconciled_at': null,
     };
 
     test('parses every wire field and round-trips', () {
@@ -374,7 +392,13 @@ void main() {
       expect(session.transaction, isA<EvmTransactionSigningRequest>());
       expect(session.sourceTxHash, '0xdeadbeef');
       expect(session.destinationTxSignature, 'mockSig123');
+      expect(session.provider, 'mock');
+      expect(session.riskStatus, 'none');
+      expect(
+          session.ledgerTransactionId, 'db2a5cbf-f853-491c-ace6-3fa7e4a536e5');
+      expect(session.destinationEventIndex, 0);
       expect(session.displayEstimate!.fxType, 'indicative');
+      expect(session.displayEstimate!.estimatedCreditMinor, 99650000);
       expect(session.createdAt, DateTime.utc(2026, 7, 17, 12));
       expect(session.creditedAt, DateTime.utc(2026, 7, 17, 12, 5));
       expect(session.sweptAt, isNull);
@@ -511,28 +535,41 @@ void main() {
   });
 
   group('DepositEvent', () {
-    test('round-trips, including null from_status on the creation event', () {
-      final creation = DepositEvent.fromJson(<String, dynamic>{
-        'from_status': null,
-        'to_status': 'created',
-        'actor': 'client',
-        'detail': null,
-        'created_at': '2026-07-17T12:00:00.000Z',
+    test('round-trips the exact backend wire shape', () {
+      // Wire shape verbatim from GET …/events: {from_status, to_status,
+      // detail, created_at} — no actor key.
+      final quotedEvent = DepositEvent.fromJson(<String, dynamic>{
+        'from_status': 'created',
+        'to_status': 'quoted',
+        'detail': {
+          'expected_destination_minor': 122782962,
+          'minimum_destination_minor': 121555132,
+          'expires_at': '2026-07-18T03:33:40.755932+00:00',
+        },
+        'created_at': '2026-07-18T03:31:40.755265+00:00',
       });
-      expect(creation.fromStatus, isNull);
-      expect(creation.toStatus, DepositStatus.created);
-      expect(DepositEvent.fromJson(creation.toJson()), creation);
+      expect(quotedEvent.fromStatus, DepositStatus.created);
+      expect(quotedEvent.toStatus, DepositStatus.quoted);
+      expect(quotedEvent.detail!['expected_destination_minor'], 122782962);
+      expect(DepositEvent.fromJson(quotedEvent.toJson()), quotedEvent);
 
       final transition = DepositEvent.fromJson(<String, dynamic>{
         'from_status': 'routing',
         'to_status': 'destination_detected',
-        'actor': 'worker',
         'detail': {'commitment': 'confirmed'},
         'created_at': '2026-07-17T12:03:00.000Z',
       });
       expect(transition.fromStatus, DepositStatus.routing);
       expect(transition.detail, {'commitment': 'confirmed'});
       expect(DepositEvent.fromJson(transition.toJson()), transition);
+
+      // Tolerates a missing from_status without crashing.
+      final headless = DepositEvent.fromJson(<String, dynamic>{
+        'to_status': 'created',
+        'created_at': '2026-07-17T12:00:00.000Z',
+      });
+      expect(headless.fromStatus, isNull);
+      expect(headless.toStatus, DepositStatus.created);
     });
   });
 }

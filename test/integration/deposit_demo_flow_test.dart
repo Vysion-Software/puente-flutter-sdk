@@ -31,11 +31,12 @@ void main() {
 
     // 2. Open a session with a deterministic idempotency key.
     const idempotencyKey = 'pesito-deposit-demo-42';
+    const demoWallet = '0xd3f0d3f0d3f0d3f0d3f0d3f0d3f0d3f0d3f0d3f0';
     final session = await puente.deposits.createSession(
       userId: 'usr_demo',
       sourceNetwork: usdcOnBase.network,
       sourceAssetId: usdcOnBase.id,
-      sourceWalletAddress: '0xDemoWallet',
+      sourceWalletAddress: demoWallet,
       sourceAmountMinor: 25000000, // 25 USDC
       displayCurrency: 'MXN',
       idempotencyKey: idempotencyKey,
@@ -73,22 +74,29 @@ void main() {
     );
     expect(submitted.status, DepositStatus.submitted);
 
-    // 6. Watch the lifecycle to the ledger credit.
+    // 6. Watch the lifecycle to the ledger credit, driving the mock
+    //    settlement exactly like the backend's mock-events flow
+    //    (nothing settles on its own — smoke.sh precedent).
     final seen = <DepositStatus>[];
-    await for (final s in puente.deposits.watch(
-      session.id,
-      pollInterval: const Duration(milliseconds: 20),
-      timeout: const Duration(seconds: 5),
-    )) {
-      seen.add(s.status);
-      if (s.status.isTerminal) break;
-    }
+    final watching = puente.deposits
+        .watch(
+          session.id,
+          pollInterval: const Duration(milliseconds: 20),
+          timeout: const Duration(seconds: 5),
+        )
+        .forEach((s) => seen.add(s.status));
+    // Let the watcher observe `submitted` before the mock settlement
+    // finalizes (mirrors the real polling cadence vs. worker credit).
+    await Future<void>.delayed(const Duration(milliseconds: 60));
+    await puente.deposits.sendMockEvent(session.id, 'settle_finalized');
+    await watching;
     expect(seen.last, DepositStatus.credited);
     expect(seen.length, greaterThanOrEqualTo(2));
 
     // 7. Receipt/history surfaces.
     final events = await puente.deposits.events(session.id);
-    expect(events.first.toStatus, DepositStatus.created);
+    expect(events.first.fromStatus, DepositStatus.created);
+    expect(events.first.toStatus, DepositStatus.quoted);
     expect(events.last.toStatus, DepositStatus.credited);
     final history = await puente.deposits.list(userId: 'usr_demo');
     expect(history.first.id, session.id);
@@ -100,7 +108,7 @@ void main() {
       userId: 'usr_demo',
       sourceNetwork: usdcOnBase.network,
       sourceAssetId: usdcOnBase.id,
-      sourceWalletAddress: '0xDemoWallet',
+      sourceWalletAddress: demoWallet,
       sourceAmountMinor: 25000000,
       displayCurrency: 'MXN',
       idempotencyKey: idempotencyKey,

@@ -1,5 +1,103 @@
 # Changelog
 
+## 0.5.0 — 2026-07-17
+
+**External-wallet deposits client.** Typed surface for the Puente
+deposits domain (`docs/deposits-external-wallet-design.md`,
+`feature/external-wallet-deposits`): a user deposits a supported
+stablecoin from their own wallet, Puente routes it (via a
+provider-neutral meta-router) to native Circle USDC on Solana at a
+user-specific deposit address, verifies settlement independently, and
+credits the ledger exactly once. The SDK renders backend state and hands
+signing requests to the external wallet — it is never the financial
+source of truth: all amounts are integer minor units passed through
+verbatim, and no fee/FX/slippage math exists client-side.
+
+### New resources
+
+- `client.deposits` (`DepositsResource`) — `getSupportedAssets` (the
+  server-side source-asset allowlist), `createSession` (assigns the
+  user's Solana deposit address), `retrieve`, `getQuote`
+  (`POST …/quotes`; re-quote legal until prepared), `prepare` (returns a
+  typed `PreparedDeposit` with the exact-amount approval + route
+  transaction signing requests and the validated spender),
+  `reportSubmission` (tx hash is a hint — the server verifies
+  settlement independently), `events` (append-only transition audit),
+  `list` (per-user, paged), `watch` (polling lifecycle stream with the
+  `TransfersResource.watch` semantics — stops on terminal states,
+  `compliance_hold` is emitted but non-terminal), and the dev-only
+  `sendMockEvent` (drives the VENDOR_MODE=mock lifecycle; the route does
+  not exist on live backends).
+- Per-hop idempotency: every POST auto-generates a UUIDv4 key;
+  `DepositsResource.deriveHopKey(key, 'quote')` derives stable
+  `'$key:quote'`-style keys so one user gesture maps to replayable keys
+  across the whole flow.
+- Error mapping: server `409 quote_expired` surfaces as the existing
+  `StaleQuoteException`; every other stable code (`unsupported_asset`,
+  `deposits_disabled`, `capability_unavailable`, `deposit_not_found`,
+  `quote_required`, `amount_below_minimum`, `amount_above_maximum`,
+  `illegal_state`, …) rides `ApiException.code` untouched.
+
+### New models
+
+`SupportedDepositAsset`, `DepositSession` (full wire doc: quote
+sub-object, destination fields, provider route id, signing handoff,
+failure code/details, and the whole timestamp trail),
+`DepositQuote` + `DepositFee` (integer minor-unit amounts; USD totals as
+display-only decimal strings), `DepositDisplayEstimate` (regional
+display block — FX is labeled `indicative`, no MXN liability exists
+until an FX conversion actually executes), `DepositEvent`,
+`PreparedDeposit`, and the unknown-tolerant `DepositStatus` enum
+(`isSettled` / `isFailure` / `isTerminal`; sweep states are post-credit
+internal and count as settled-terminal for `watch`). New Dart 3 sealed
+union `PuenteSigningRequest` — `EvmTransactionSigningRequest`,
+`EvmErc20ApprovalSigningRequest`, `SolanaTransactionSigningRequest`, and
+the `UnknownSigningRequest` fallback (`fromJson` dispatches on `type`
+and never throws on a new variant, so a new backend signing scheme can't
+crash a deployed app; `switch` over the union stays compile-time
+exhaustive). Malformed session payloads throw a typed `FormatException`
+instead of a cast crash.
+
+### Mock transport
+
+`MockTransport` models the full deposit lifecycle with the design doc's
+exact wire shapes and stable error codes (`deposit_not_found` 404,
+`quote_expired` 409, `quote_required` 409, `illegal_state` 409,
+`unsupported_asset` 400, `amount_below_minimum` / `amount_above_maximum`
+400, `capability_unavailable` 503 for Solana-source,
+`deposits_disabled` 503 via the new `depositsEnabled` toggle):
+deterministic per-user deposit addresses, fixture route quotes
+(documented as NOT production truth — $0.35 fixture fees netted with
+integer math, 1% slippage floor, 2-minute TTL, labeled-indicative
+display estimates), prepare with exact-amount approval + route
+transaction payloads, and a `settlementLatency`-driven progression
+`submitted → routing → destination_detected → credited` after
+`reportSubmission` (synchronous at `Duration.zero`). Exceptional paths
+move only via `POST /deposit-sessions/:id/mock-events` (`quote`,
+`prepared`, `submitted`, `routing`, `settle`, `settle_finalized`,
+`underpay`, `wrong_asset`, `route_failed`, `compliance_hold`,
+`compliance_release`, `credit`, `sweep`, `quote_expired`) — the mock
+never fails or settles on its own beyond the happy-path timers.
+Idempotency replay covers all the new POSTs.
+
+### Housekeeping
+
+- `packageVersion` const synced with pubspec at `0.5.0`.
+- 49 new tests (model round-trips incl. unknown-enum and sealed-union
+  dispatch, resource flow, mock contract pins, integration demo flow);
+  suite now 200.
+
+### Companion Puente changes
+
+`feature/external-wallet-deposits`: `crates/puente-deposits` (domain
+state machine, `DepositRouteProvider` trait with Trustware live adapter
++ deterministic mock, per-user deposit addresses, RPC settlement
+verification, atomic ledger credit, treasury sweep, reconciliation),
+migration `0013_external_wallet_deposits.sql`, `/v1/deposit-*` routes in
+`puente-api`, and worker loop functions. See
+`docs/deposits-external-wallet-design.md` +
+`docs/deposits-trustware-capabilities.md`.
+
 ## 0.4.0 — 2026-07-07
 
 **Onboarding / KYC / Personal Information client.** Typed surface for the

@@ -208,4 +208,4 @@ class PuenteConfig {
 
 /// Current SDK package version, mirrored from pubspec.yaml. Bump on
 /// release; CI checks the two are in sync.
-const String packageVersion = '0.4.0';
+const String packageVersion = '0.5.0';

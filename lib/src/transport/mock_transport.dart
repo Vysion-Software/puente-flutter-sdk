@@ -433,6 +433,11 @@ class MockTransport implements PuenteTransport {
           'mock transport has no remittance cap for ${source.code}',
         );
     }
+    // Absurd amounts (fixture-only, but demo code gets copied): once the
+    // percentage would reach the cap anyway, short-circuit instead of
+    // multiplying — this also keeps `amount * rate` inside 64-bit range.
+    final breakEven = cap * 10000 ~/ remittanceRateBpsFixture;
+    if (amountMinor >= breakEven) return cap;
     // Ceiling division: sub-minor fractions round up (never undercharge),
     // then the corridor cap binds from above.
     final pct =

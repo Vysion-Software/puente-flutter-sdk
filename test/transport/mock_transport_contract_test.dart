@@ -81,6 +81,23 @@ void main() {
               MockTransport.crossBorderFlatFeeUsdFixtureMinor, Currency.usd));
     });
 
+    test('fee computation survives absurdly large amounts without overflow',
+        () async {
+      // ~$90T: far above the cap's break-even, close enough to 2^63 that
+      // naive amount*rate math would wrap. The fixture must still return
+      // exactly the cap and keep every emitted field non-negative.
+      final q = await client.quotes.create(
+        sourceAmount: const Money.fromMinor(9007199254740992, Currency.usd),
+        targetCurrency: Currency.mxn,
+      );
+      expect(
+          q.fee,
+          const Money.fromMinor(
+              MockTransport.crossBorderFlatFeeUsdFixtureMinor, Currency.usd));
+      expect(q.totalCost!.minorUnits, greaterThan(0));
+      expect(q.targetAmount.minorUnits, greaterThan(0));
+    });
+
     test(
         'MXN-source fee is 1% up to the \$15.00 MXN cap, '
         'denominated in MXN', () async {

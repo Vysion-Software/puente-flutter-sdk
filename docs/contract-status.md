@@ -1,7 +1,7 @@
 # Contract Status — `puente_railway` SDK ↔ Puente backend
 
 Authoritative snapshot of how the SDK lines up against the
-`Vysion-Software/Puente` Rust workspace, as of 2026-06-11. This file is
+`Aztlan-Software/Puente` Rust workspace, as of 2026-06-11. This file is
 the dedup target — if you're about to write an issue about the SDK being
 broken, check here first.
 

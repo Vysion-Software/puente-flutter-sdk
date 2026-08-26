@@ -1,6 +1,6 @@
 **Title:** Resource methods (`transfers.create`, etc.) do not accept or forward an `Idempotency-Key`
 
-**Repo / branch:** `Vysion-Software/puente-flutter-sdk` / `main`
+**Repo / branch:** `Aztlan-Software/puente-flutter-sdk` / `main`
 **Severity:** P2 / api
 **Labels:** `enhancement`, `area:api`, `cross-repo`
 

@@ -1,6 +1,6 @@
 **Title:** `WebhookVerifier` parses `t=…,v1=…` but Puente emits raw hex `X-Signature` — pick one with Puente
 
-**Repo / branch:** `Vysion-Software/puente-flutter-sdk` / `main`
+**Repo / branch:** `Aztlan-Software/puente-flutter-sdk` / `main`
 **Severity:** P1 / cross-repo
 **Labels:** `bug`, `area:webhooks`, `cross-repo`
 
@@ -16,7 +16,7 @@ t=<unix_seconds>,v1=<hex_hmac_sha256>
 and signs `"<t>.<payload>"` — Stripe-style.
 
 Puente's inbound webhook handler (`crates/puente-offramp/src/webhook.rs`
-in `Vysion-Software/Puente`) accepts raw hex (or `sha256=<hex>`) in
+in `Aztlan-Software/Puente`) accepts raw hex (or `sha256=<hex>`) in
 the `X-Signature` header, signing the **raw request body bytes**.
 
 The two protocols cannot interoperate. The SDK's verifier would reject
@@ -35,7 +35,7 @@ parser logic stays put), have Puente emit the same.
 
 ## Acceptance criteria
 
-- [ ] `Vysion-Software/Puente#13` (outbound webhooks) commits to a
+- [ ] `Aztlan-Software/Puente#13` (outbound webhooks) commits to a
   signature format.
 - [ ] If the format chosen is Stripe-style: SDK's `WebhookVerifier`
   needs only the constant-time-compare fix (see `sdk-02`).
@@ -48,7 +48,7 @@ parser logic stays put), have Puente emit the same.
 ## Evidence
 
 - `lib/src/webhooks/webhook_verifier.dart`.
-- `Vysion-Software/Puente/crates/puente-offramp/src/webhook.rs`.
+- `Aztlan-Software/Puente/crates/puente-offramp/src/webhook.rs`.
 
 ## Dependencies / related
 

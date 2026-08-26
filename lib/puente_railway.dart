@@ -27,7 +27,7 @@
 /// final puente = PuenteClient.mock();
 /// ```
 ///
-/// [puente]: https://github.com/Vysion-Software/Puente
+/// [puente]: https://github.com/Aztlan-Software/Puente
 library puente_railway;
 
 // Client + config.

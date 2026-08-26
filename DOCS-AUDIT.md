@@ -50,8 +50,8 @@ this audit is new.
 - Read `pubspec.yaml`, `lib/puente_railway.dart`, every file in
   `lib/src/`, every test in `test/`.
 - Cross-referenced route table + webhook signature format against
-  `Vysion-Software/Puente` (`crates/puente-api/src/routes.rs`,
+  `Aztlan-Software/Puente` (`crates/puente-api/src/routes.rs`,
   `crates/puente-offramp/src/webhook.rs`).
 - Verified the SDK is not referenced anywhere in
-  `Vysion-Software/pesito` (zero `grep` hits in `mobile/` or
+  `Aztlan-Software/pesito` (zero `grep` hits in `mobile/` or
   `functions/`).

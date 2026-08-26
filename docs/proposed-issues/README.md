@@ -3,7 +3,7 @@
 > **STATUS: filed AND closed.** Every spec in this directory has been
 > opened as a GitHub issue. **All five were closed as completed** by
 > the v0.2.0 production rewrite (commit
-> [`e112145`](https://github.com/Vysion-Software/puente-flutter-sdk/commit/e112145))
+> [`e112145`](https://github.com/Aztlan-Software/puente-flutter-sdk/commit/e112145))
 > in the same audit pass.
 
 | Spec | Filed as | State | Title |

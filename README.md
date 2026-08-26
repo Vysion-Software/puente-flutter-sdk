@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
 Official Dart/Flutter SDK for **Puente Railway** — the Solana + Etherfuse
-settlement rail behind [Pesito](https://github.com/Vysion-Software/pesito).
+settlement rail behind [Pesito](https://github.com/Aztlan-Software/pesito).
 Send USD → MXN remittances, fetch quotes, look up CLABE bank routing,
 verify webhooks, and stream transfer state from one clean Dart API.
 
@@ -274,7 +274,7 @@ dart format .
 The `MockTransport` (dev-only fixtures, importable from
 `package:puente_railway/testing.dart` since 0.3.0) is deterministic
 given a fixed `seed:` — useful for reproducing test failures. Open issues at
-<https://github.com/Vysion-Software/puente-flutter-sdk/issues>.
+<https://github.com/Aztlan-Software/puente-flutter-sdk/issues>.
 
 ## License
 

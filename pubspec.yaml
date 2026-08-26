@@ -5,10 +5,10 @@ description: >-
   settlement rail behind Pesito. Send USD→MXN remittances, fetch quotes,
   verify webhooks, and stream transfer state. Pure Dart core; works in
   Flutter, server, and CLI contexts.
-homepage: https://github.com/Vysion-Software/puente-flutter-sdk
-repository: https://github.com/Vysion-Software/puente-flutter-sdk
-issue_tracker: https://github.com/Vysion-Software/puente-flutter-sdk/issues
-documentation: https://github.com/Vysion-Software/puente-flutter-sdk#readme
+homepage: https://github.com/Aztlan-Software/puente-flutter-sdk
+repository: https://github.com/Aztlan-Software/puente-flutter-sdk
+issue_tracker: https://github.com/Aztlan-Software/puente-flutter-sdk/issues
+documentation: https://github.com/Aztlan-Software/puente-flutter-sdk#readme
 topics:
   - payments
   - fintech

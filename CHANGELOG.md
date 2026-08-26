@@ -333,7 +333,7 @@ callers will need to update.
 
 ### Metadata fixes
 - `pubspec.yaml` `homepage` / `repository` / `issue_tracker` now point
-  at `github.com/Vysion-Software/puente-flutter-sdk`. Closes proposed
+  at `github.com/Aztlan-Software/puente-flutter-sdk`. Closes proposed
   `sdk-04-pubspec-metadata-fix`.
 - Dropped `flutter_test` for unit tests; the SDK now uses
   `package:test` so the core works in pure Dart (server, CLI). Flutter
@@ -353,7 +353,7 @@ callers will need to update.
   → idempotent retry" flow Pesito's testnet demo will run.
 
 ### Companion Puente changes
-- `Vysion-Software/Puente` adds opt-in in-memory `/v1/{quotes,transfers,
+- `Aztlan-Software/Puente` adds opt-in in-memory `/v1/{quotes,transfers,
   accounts,clabe}` routes behind `PUENTE_ENABLE_DEMO_ROUTES=1`. Lets
   the SDK's `HttpTransport` integration-test against a real
   `puente-api` binary while the production routes are still being

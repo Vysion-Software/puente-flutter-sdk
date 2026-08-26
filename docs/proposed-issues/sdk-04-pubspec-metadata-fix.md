@@ -1,6 +1,6 @@
 **Title:** `pubspec.yaml` URLs point at `github.com/puente-railway/…` which doesn't exist
 
-**Repo / branch:** `Vysion-Software/puente-flutter-sdk` / `main`
+**Repo / branch:** `Aztlan-Software/puente-flutter-sdk` / `main`
 **Severity:** P3 / hygiene
 **Labels:** `documentation`, `bug`
 
@@ -15,7 +15,7 @@ issue_tracker: https://github.com/puente-railway/puente_railway_flutter/issues
 ```
 
 None of those URLs resolve to a real GitHub org — the SDK actually
-lives at `Vysion-Software/puente-flutter-sdk`. A pub.dev visitor
+lives at `Aztlan-Software/puente-flutter-sdk`. A pub.dev visitor
 clicking through any of these links lands on a 404.
 
 The README's CI badge also points at `puente-railway/puente_railway_flutter`,
@@ -24,9 +24,9 @@ same problem.
 ## Expected behavior
 
 ```yaml
-homepage: https://github.com/Vysion-Software/puente-flutter-sdk
-repository: https://github.com/Vysion-Software/puente-flutter-sdk
-issue_tracker: https://github.com/Vysion-Software/puente-flutter-sdk/issues
+homepage: https://github.com/Aztlan-Software/puente-flutter-sdk
+repository: https://github.com/Aztlan-Software/puente-flutter-sdk
+issue_tracker: https://github.com/Aztlan-Software/puente-flutter-sdk/issues
 ```
 
 README badge updated to the real CI URL once CI is set up; for now,

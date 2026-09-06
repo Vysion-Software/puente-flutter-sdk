@@ -1,5 +1,124 @@
 # Changelog
 
+## 0.7.0 - 2026-09-06
+
+**Didit verification handoff.** `KycSession` can now tell a client how to
+launch verification, which it previously could not.
+
+- `KycSession.verificationUrl` — the hosted verification page, present on the
+  creation and resume responses only. Like `clientToken` it is excluded from
+  `toJson()` and masked in `toString()`: both are live capabilities over one
+  person's identity verification, and anyone holding the URL can submit their
+  own document and selfie into that session. Always check the host before
+  opening it.
+- `KycVerificationSurface` (`hosted_url` | `native_sdk` | `none` | `unknown`)
+  and `KycSession.verificationSurface`. Switch on this rather than on
+  `provider` or on whether a string looks like a URL — presentation and vendor
+  are different questions, one backend can serve both surfaces at once, and an
+  unrecognised surface reports `launchable == false` rather than being guessed
+  at.
+- `KycSession.providerEnvironment` (`live` | `sandbox` | `mock`). Worth
+  showing in the UI: for Didit the environment is a property of the API key's
+  application rather than of any URL, and the vendor's management API does not
+  report it, so a sandbox key in production is otherwise invisible.
+- `provider` may now be `didit`.
+
+All three fields are optional and tolerant of absence, so this build talks to
+an older backend unchanged.
+
+## 0.6.0 — 2026-08-27
+
+**Full-audit hardening.** Security, correctness, and API-safety fixes from
+an end-to-end audit of the SDK (architecture, API surface, error handling,
+credential handling, financial-operation safety). No wire-contract changes:
+the routes, request bodies, and response shapes are identical to 0.5.0.
+
+### Security
+
+- **Path identifiers can no longer retarget an authenticated request.**
+  Dart's `Uri` resolves dot segments while assembling a path, so an
+  identifier containing `..` silently redirected the request to a different
+  endpoint *with the `Authorization` header still attached*.
+  `clabe.lookup('../../v1/transfers')` issued an authenticated
+  `GET /v1/transfers` — a value typed into a CLABE form field could redirect
+  a lookup onto an unrelated endpoint — and
+  `transfers.retrieve('../../../balances')` escaped the `/v1` prefix
+  entirely. Every caller-supplied path identifier now passes through
+  `ResourceBase.pathSegment`, which rejects separators, percent escapes,
+  query/fragment delimiters, control characters, and dot segments before
+  anything reaches the wire. Pre-encoded traversal (`%2e%2e`) is rejected
+  too, since it normalizes back to `..`.
+- **A cleartext `http://` base URL is refused** for any non-loopback host.
+  `baseUrlOverride` exists for pointing at a local `puente-api`; nothing
+  previously stopped it from carrying a production key to an arbitrary
+  `http://` host, where the bearer token, the CLABE, the beneficiary name,
+  and the raw SSN/ITIN/CURP submitted through `onboarding.updateProfile`
+  would all travel in the clear. `http://127.0.0.1`, `http://localhost`,
+  and every `https://` URL are unaffected.
+- **Observers no longer receive key material.** The `Authorization` value
+  is masked to `Bearer ***`; the previous masking emitted the last four
+  characters of the secret into a sink that is commonly forwarded to Sentry
+  or a log aggregator. `Idempotency-Key` keeps its head/tail masking — it
+  is a correlator, not a credential.
+- **Argument guards survive a release build.** The paired-field checks in
+  `onboarding.updateProfile` were `assert`s, which Dart strips from release
+  builds; in production a half-supplied pair was serialized as
+  `{"type": "ssn", "value": null}` instead of failing locally. They are now
+  runtime guards in every build mode.
+
+### Correctness
+
+- **An ambiguous outcome is now safely retryable.** `PuenteException` gains
+  `idempotencyKey`, populated on every failure that carried one. A timeout
+  on `transfers.create` does not mean the transfer did not happen; because
+  the SDK mints the key internally, a caller previously had no way to retry
+  except with a freshly minted key — which the server reads as a second,
+  distinct transfer. Retry with `e.idempotencyKey` and the server replays
+  the original outcome instead of executing again.
+- **Side-effecting POSTs that lacked an idempotency key now send one.**
+  The transport retries POSTs on 5xx and on transport errors, so
+  `onboarding.submitConsents` (a consent record with legal weight) and
+  `personalInfo.requestCorrection` (a reviewable ticket) could be applied
+  twice by the SDK itself. `onboarding.updateProfile` and `accounts.update`
+  gained keys as well, and all four accept an explicit `idempotencyKey`.
+- **A decode failure is a `PuenteException`.** `PuenteException` is
+  documented as the single catch-all for every SDK failure, but model
+  constructors let raw `FormatException` / `TypeError` / `ArgumentError`
+  escape on an unexpected wire shape — so a caller who wrote
+  `on PuenteException` crashed on any backend wire change. Response
+  decoding now runs through `ResourceBase.decode` / `decodeList` and
+  surfaces the new `DecodeException`, which carries the target model, the
+  originating `requestId`, and the underlying error as `cause`.
+- **`StaleQuoteException` keeps its context.** A server-emitted
+  `409 quote_expired` dropped `requestId` — on precisely the money-critical
+  path where support correlation matters most. It now carries `requestId`
+  and `idempotencyKey`, and reads timestamps from the ambient `clock`
+  rather than `DateTime.now()`, matching the rest of the SDK and making
+  `withClock` tests deterministic.
+
+### API
+
+- New `DecodeException` and `InvalidArgumentException`, both
+  `PuenteException` subclasses, exported from
+  `package:puente_railway/puente_railway.dart`.
+- New `idempotencyKey` field on `PuenteException` and every subclass.
+- `transfers.watch` and `deposits.watch` accept `throwOnTimeout`
+  (default `false`, preserving existing behavior). By default a timed-out
+  poll completes the stream normally, which is indistinguishable from
+  settlement — a UI that renders `onDone` as success reports a
+  still-in-flight transfer as finished. Opt in to receive a
+  `TimeoutException` instead.
+- New optional `idempotencyKey` parameters on `accounts.update`,
+  `onboarding.updateProfile`, `onboarding.submitConsents`,
+  `personalInfo.requestCorrection`, and `kyc.sendMockEvent`.
+
+All additions are source-compatible with 0.5.0. The one behavior change a
+caller can observe is that a malformed 2xx body now raises
+`DecodeException` rather than a raw `FormatException`; code that caught
+`PuenteException` gains coverage it did not have, and code that caught
+`FormatException` explicitly should switch to `DecodeException` (the
+original error remains available as `cause`).
+
 ## 0.5.0 — 2026-07-17
 
 **External-wallet deposits client.** Typed surface for the Puente
